@@ -2,6 +2,7 @@
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
   JDK 21 · Maven · Java-native · Commodity GPU Cluster
+  Last updated: 2026-03-06 (session 2)
 ================================================================================
 
 
@@ -11,11 +12,11 @@
 
 A fully Java-native distributed LLM inference engine that runs large language
 models across a cluster of commodity GPUs — replacing the need for a single
-expensive high-VRAM card with a network of affordable machines already
-available in the wild.
+expensive high-VRAM card with a network of affordable machines.
 
 Core philosophy:
   - No Python. No GIL. Real threads.
+  - No Spring Boot. No framework bloat.
   - Commodity hardware over premium hardware
   - Java distributed tooling (Hazelcast, gRPC) over NCCL/MPI
   - Pipeline parallelism — LAN friendly, no InfiniBand required
@@ -29,7 +30,7 @@ Core philosophy:
 Compute Nodes (x16 old PCs)
   GPU       4GB VRAM each — 16x4GB = 64GB total VRAM
   CPU       8+ core modern (AMD/Intel)
-  RAM       16-32GB per node (KV cache overflow buffer)
+  RAM       16-32GB per node (KV cache JVM heap)
   Storage   NVMe SSD (fast shard loading)
 
 Networking
@@ -40,31 +41,21 @@ Networking
 Total extra networking cost: ~$800-1000 for 16 machines.
 Far cheaper than one 64GB GPU.
 
-Why Java wins on networking:
-  - True multithreading — no GIL
-  - Java 21 virtual threads for async node management
-  - Hazelcast, Akka, gRPC — battle-tested distributed primitives
-  - JCuda / jVerbs for direct CUDA and RDMA access
-  - Pipeline parallelism: activations passed node-to-node, LAN-friendly
-
-Pipeline parallelism vs tensor parallelism:
-  - Tensor parallelism requires 400Gb/s+ (InfiniBand) — too expensive
-  - Pipeline parallelism passes layer activations between nodes
-  - Much smaller data per hop — 10GbE is sufficient
-  - Async pipelining hides network latency behind compute time
-
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 3. MAVEN PROJECT STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Multi-module Maven project, JDK 21 throughout.
+Multi-module Maven project, JDK 21 throughout. BUILD SUCCESS as of 2026-03-06.
 
   hyper-stack-4j/               <- parent POM
   |
-  +-- api/                      <- gRPC proto definitions + shared DTOs
+  +-- api/                      <- OpenAPI spec + generated models/interfaces
+  |   +-- src/main/resources/openapi.yaml
+  |   +-- src/main/proto/inference.proto
+  |
   +-- registry/                 <- Model Registry + Shard Loader
-  +-- coordinator/              <- Coordinator + Scheduler
+  +-- coordinator/              <- Coordinator + Scheduler + REST server
   +-- node/                     <- Inference Node (runs on each GPU machine)
   +-- kvcache/                  <- KV Cache Manager
   +-- tokenizer/                <- Tokenizer
@@ -82,12 +73,12 @@ Key dependency versions:
   protobuf.version              3.25.3
   jcuda.version                 12.0.0
   djl.version                   0.27.0
-  ohc.version                   0.7.4
-  ehcache.version               3.10.8
-  caffeine.version              3.1.8
+  caffeine.version              3.1.8        <- ONLY cache library (see §6)
   resilience4j.version          2.2.0
   micrometer.version            1.13.0
-  spring-boot.version           3.3.0
+  javalin.version               6.3.0        <- REST HTTP server (no Spring)
+  openapi-generator.version     7.5.0
+  protobuf-maven-plugin         0.6.1        <- xolstice plugin (NOT os72)
   flatbuffers.version           24.3.25
   slf4j.version                 2.0.13
   logback.version               1.5.6
@@ -95,13 +86,84 @@ Key dependency versions:
   mockito.version               5.12.0
   assertj.version               3.26.0
 
+REMOVED from original design (all caused transitive dependency failures):
+  spring-boot.version           REMOVED — no Spring Boot, no Spring anything
+  ohc.version                   REMOVED — abandoned, dead NetBeans repo
+  ehcache.version               REMOVED — JAXB transitive mess
+  chronicle-map.version         REMOVED — same JAXB transitive mess
+
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. SYSTEM ARCHITECTURE
+4. API MODULE — WHAT WAS BUILT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+4.1  OpenAPI 3.0 REST Spec (openapi.yaml)
+  Client-facing REST API served by coordinator via Javalin.
+  Generator: openapi-generator-maven-plugin 7.5.0, jaxrs-spec (server mode)
+  Output: target/generated-sources/openapi/src/gen/java
+
+  Endpoints:
+    POST   /v1/inference          blocking inference
+    POST   /v1/inference/stream   SSE token-by-token streaming
+    POST   /v1/models             load model, triggers sharding
+    GET    /v1/models             list all models
+    GET    /v1/models/{modelId}   model status + shard assignment
+    DELETE /v1/models/{modelId}   unload model, free VRAM
+    GET    /v1/cluster/health     cluster overview
+    GET    /v1/cluster/nodes      all node statuses
+    GET    /v1/cluster/shardmap   current layer assignments
+
+  Generated models (16 classes):
+    ApiError, RetryableError
+    ChatMessage, SamplingConfig
+    InferenceRequest, InferenceResponse, TokenEvent
+    LoadModelRequest, ModelDescriptor, ModelList
+    LayerRange, ShardAssignment, ShardMap
+    NodeDescriptor, NodeList
+    ClusterHealth
+
+  Generated interfaces (3):
+    InferenceApi   — implemented in coordinator
+    ModelsApi      — implemented in coordinator
+    ClusterApi     — implemented in coordinator
+
+4.2  gRPC Proto (inference.proto)
+  Internal node-to-node communication. Never exposed to clients.
+  Location: api/src/main/proto/inference.proto
+  Plugin: org.xolstice.maven.plugins:protobuf-maven-plugin:0.6.1
+          + kr.motd.maven:os-maven-plugin:1.7.1 (platform detection)
+  Output: target/generated-sources/protobuf/java (messages)
+          target/generated-sources/protobuf/grpc-java (service stubs)
+  Java package: io.hyperstack4j.api.grpc
+
+  Services:
+    InferenceService   — client → coordinator (Infer, InferStream)
+    NodeService        — coordinator → each GPU node
+                         (ForwardPass, LoadShard, UnloadShard, GetNodeStatus)
+    RegistryService    — internal registry queries
+                         (GetShardMap, RegisterNode, RecomputeShards)
+
+4.3  API module dependencies
+  io.grpc:grpc-netty-shaded
+  io.grpc:grpc-protobuf
+  io.grpc:grpc-stub
+  com.google.protobuf:protobuf-java
+  jakarta.ws.rs:jakarta.ws.rs-api:3.1.0
+  jakarta.annotation:jakarta.annotation-api:2.1.1
+  jakarta.validation:jakarta.validation-api:3.0.2
+  org.hibernate.validator:hibernate-validator:8.0.1.Final
+  io.swagger:swagger-annotations:1.6.14
+  com.fasterxml.jackson.core:jackson-databind:2.17.1
+  com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.1
+  javax.annotation:javax.annotation-api:1.3.2  (gRPC generated code)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. SYSTEM ARCHITECTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   [Client]
-      | gRPC streaming
+      | REST (Javalin) or gRPC streaming
       v
   [Load Balancer]  HAProxy / Nginx
       |
@@ -110,8 +172,9 @@ Key dependency versions:
   [Coordinator 1]         [Coordinator 2]
      LEADER                  STANDBY
       |
+      +-- Javalin REST server (port 8080)
       +-- Tokenizer (DJL SentencePiece)
-      +-- Scheduler (continuous batching)
+      +-- Scheduler (continuous batching, virtual threads)
       +-- Sampler (pure Java)
       +-- PrefixCache (Trie)
       +-- InferencePipeline
@@ -127,348 +190,168 @@ Key dependency versions:
       Layer 0-1  Layer 2-3  Layer 4-5       Layer N
       + Embed    GPU shard  GPU shard       + Output proj
 
-Data plane vs control plane:
-  gRPC      -> activation tensors between nodes (latency critical, bulk)
-  Hazelcast -> shard assignments, node status, commands, health state
-
-This mirrors production distributed system design (Kafka, Kubernetes).
-
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-5. ACTORS — DESIGN DECISIONS
+6. KV CACHE — REVISED DESIGN
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
---------------------------------------------------------------------------------
-5.1  MODEL REGISTRY + SHARD LOADER
---------------------------------------------------------------------------------
+Original three-tier design (GPU + CPU off-heap + Disk) was simplified.
 
-Responsibility:
-  Know what models exist, how they are split across nodes,
-  and load the correct weight slices into GPU VRAM on each node.
+DECISION: Two tiers, RAM only. No disk IO ever.
 
-Decisions:
-  Registry placement      Hazelcast distributed IMap — no god objects, no SPOF
-  Replica count           Configurable in yaml
-  Seed node election      IMQ-inspired scoring:
-                            score = w1*connectivity + w2*stability
-                                  + w3*betweennessCentrality + w4*vram
-                          Weights are configurable.
-  Seed re-election        Coarse-grained state change triggers only
-                          (avoid reshuffling on minor fluctuations)
-  Min seed nodes          2 (configurable, never 1 — no SPOF)
-  Sharding strategy       Greedy, contiguous layer blocks, VRAM-aware
-                          NOT round-robin (would kill pipeline parallelism)
-  Dynamic resharding      Yes — rebalances on node join/leave
-  ShardMap owner          Registry triggers recomputation
-  Mid-inference failure   Fail request + retry hint + background reshard
-  Node at rest failure    Auto reshard — no operator intervention
-  Weight format           GGUF (single file, quantization-aware, dominant)
-  Weight parser           DJL / llama.cpp JNI — don't reinvent
-  Embeddings              Node 1 (first in pipeline, natural fit)
-  Output projection       Last Node (last in pipeline, no extra hop)
-  Node registration       Push — nodes self-register on startup
-  VRAM reporting          JCuda self-reported, 10% headroom reserved
+Tier 1  GPU VRAM      JCuda CudaBuffer      hot, active sequences
+Tier 2  JVM heap      Caffeine              warm sequences, evicts via W-TinyLFU
 
-Shard assignment algorithm (greedy):
-  Sort healthy nodes by IMQ seed score descending.
-  For each node:
-    layersFit = node.availableVram / vramPerLayer
-    assign layers [currentLayer .. currentLayer + layersFit]
-    advance currentLayer
-  If all layers not assigned: throw InsufficientClusterVramException
+Rationale:
+  - OHC (off-heap)  : abandoned library, dead NetBeans repo blocks Maven
+  - Ehcache 3       : JAXB transitive dependency, same dead repo
+  - Chronicle Map   : same transitive chain
+  - Disk tier       : adds complexity for a use case (thousands of long sessions)
+                      that doesn't apply to this deployment scale
+  - Caffeine        : already in stack, pure JVM heap, GC-aware, W-TinyLFU,
+                      zero external dependencies, bounded by -Xmx
 
-Node registration flow:
-  Node boots up
-    -> reads cluster-config.yaml
-    -> calls JCuda.cudaMemGetInfo() for available VRAM
-    -> builds NodeDescriptor (nodeId, host, port, vram, status=IDLE)
-    -> writes to Hazelcast IMap("node-registry")
-    -> Coordinator receives Hazelcast EntryAddedListener event
-    -> Coordinator triggers ShardMap recomputation
-
---------------------------------------------------------------------------------
-5.2  COORDINATOR + SCHEDULER
---------------------------------------------------------------------------------
-
-Responsibility:
-  Accept client requests, orchestrate the inference pipeline across nodes,
-  manage token generation loop, stream results back to client.
-
-Decisions:
-  Batching                Dynamic continuous batching
-                          (requests join/leave batch mid-generation)
-  Preemption              Configurable — ABORT strategy first
-                          (CHECKPOINT = phase 2)
-  Coordinator count       2 (leader + standby)
-  Leader election         Hazelcast CP FencedLock
-  Queue full response     HTTP 503 + Retry-After estimate
-  Client protocol         gRPC streaming
-  Data plane              gRPC (activations — fast, binary, streaming)
-  Control plane           Hazelcast (commands, state, events)
-  Priority queuing        PriorityBlockingQueue, configurable weights
-                          HIGH=3, NORMAL=1, LOW=1
-  Concurrency             Java 21 Virtual Threads
-
-Autoregressive generation loop:
-  1. Tokenizer.encode(chatTemplate.format(messages))  -> int[] tokens
-  2. PrefixCache.findLongestPrefix(tokens)            -> match
-  3. If match found: pipeline.forwardFromPosition()
-     Else:           pipeline.forward(tokens)
-  4. Sampler.sample(logits, samplingParams, history)  -> int nextToken
-  5. If nextToken == EOS: break
-  6. Tokenizer.decodeToken(nextToken)                 -> String piece
-  7. gRPC stream: write piece to client immediately
-  8. Repeat from step 2
-
-Continuous batching:
-  On each forward pass completion:
-    - Remove finished sequences, free slots
-    - Fill freed slots from priority queue
-    - GPU never idles between requests
-
-Leader election:
-  FencedLock leaderLock = hz.getCPSubsystem().getLock("coordinator-leader")
-  If tryLock() succeeds -> LEADER (starts scheduler + pipeline)
-  Else                  -> STANDBY (watches leader heartbeat)
-  On leader death: Hazelcast releases lock, standby immediately re-elects
-
-gRPC proto services:
-  InferenceService:
-    Infer(InferenceRequest)       -> InferenceResponse       (unary)
-    InferStream(InferenceRequest) -> stream TokenResponse    (streaming)
-
-  NodeService:
-    ForwardPass(ForwardRequest)   -> ForwardResponse
-    LoadShard(LoadShardRequest)   -> LoadShardResponse
-    UnloadShard(...)              -> UnloadShardResponse
-    NodeStatus(...)               -> NodeStatusResponse
-
---------------------------------------------------------------------------------
-5.3  KV CACHE MANAGER
---------------------------------------------------------------------------------
-
-Responsibility:
-  Store and retrieve attention Key/Value pairs across three memory tiers.
-  Prefix caching for shared system prompts.
-
-Decisions:
-  Tier 1 GPU              JCuda CudaBuffer — custom LRU management
-  Tier 2 CPU              OHC off-heap library — no GC pressure
-  Tier 3 Disk             Ehcache 3 — automatic overflow
-  Eviction policy         Pluggable EvictionPolicy interface, per-tier yaml config
-  Prefix caching          Yes — Trie structure, checked before every forward pass
-  Cache index             Hazelcast IMap (metadata only — not the tensors)
-  Cache locality          Natural: each node caches KV only for its own layers
-
-Eviction policy interface:
-  interface EvictionPolicy {
-    RequestId selectVictim(Collection<CacheEntry> candidates);
-    String name();
-  }
-  Implementations: LRUPolicy, LFUPolicy, SizeAwarePolicy, HybridPolicy
-
-Cache configuration:
+Configuration:
   kv-cache:
     gpu:
       capacity-fraction: 0.85
       eviction: LRU
     cpu:
-      capacity-gb: 24
-      eviction: LFU
-    disk:
-      capacity-gb: 200
-      path: /mnt/kvcache
-      eviction: LFU
+      max-bytes: 8589934592   # 8GB — tune with your -Xmx
+      eviction: W-TinyLFU     # Caffeine default
 
-Prefix cache (Trie):
-  findLongestPrefix(int[] tokens) -> PrefixMatch(length, kvBlockRef)
-  cachePrefix(int[] tokens, KVBlockRef blocks)
-  On match: skip recomputing matched prefix, forward from divergence point
-  Win: if 16 clients share same 500-token system prompt,
-       compute it once instead of 16 times per request.
+Prefix cache (unchanged):
+  Trie structure, checked before every forward pass.
+  Win: 16 clients with same 500-token system prompt → compute once, reuse 16x.
 
-VRAM sizing formula:
-  cache_bytes = 2 x layers x heads x head_dim x bytes_per_element x seq_len
-  LLaMA3-8B (32 layers, 32 heads, 128 dim, fp16):
-    ~524MB per 1000 tokens
-  4GB GPU, ~3.6GB free after weights:
-    fits ~6,800 tokens active KV cache
-  16 nodes x 6,800 = ~108,800 tokens distributed total
 
-Hazelcast cache index (metadata only):
-  IMap<RequestId, CacheMetadata>
-  CacheMetadata { requestId, cachedTokenCount, currentTier,
-                  nodesCached[], lastAccessed, sizeBytes }
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. REST / HTTP — REVISED DESIGN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
---------------------------------------------------------------------------------
-5.4  HEALTH MONITOR
---------------------------------------------------------------------------------
+DECISION: No Spring Boot. Spring is too heavy for what we need.
 
-Responsibility:
-  Detect node failures, GPU degradation, circuit-break struggling nodes,
-  trigger recovery.
+REST API server       Javalin 6.x   ~1MB jar, built on Jetty directly
+                                    no annotations, no magic, explicit routing
+                                    perfect fit for Virtual Threads
 
-Decisions:
-  Node liveness           Hazelcast memberRemoved event (automatic, free)
+Metrics scrape        JDK HttpServer (built-in since Java 6) + Micrometer
+                      zero extra dependencies
+
+Example coordinator server setup:
+  Javalin app = Javalin.create().start(8080);
+  app.post("/v1/inference",        ctx -> inferenceHandler.infer(ctx));
+  app.post("/v1/inference/stream", ctx -> inferenceHandler.inferStream(ctx));
+  app.post("/v1/models",           ctx -> modelsHandler.load(ctx));
+  app.get("/v1/cluster/health",    ctx -> clusterHandler.health(ctx));
+
+Example metrics endpoint:
+  HttpServer metricsServer = HttpServer.create(new InetSocketAddress(9091), 0);
+  metricsServer.createContext("/metrics", exchange -> {
+      String response = registry.scrape();
+      exchange.sendResponseHeaders(200, response.getBytes().length);
+      exchange.getResponseBody().write(response.getBytes());
+  });
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. ACTORS — DESIGN DECISIONS (unchanged from session 1)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+8.1  MODEL REGISTRY + SHARD LOADER
+  Registry placement      Hazelcast distributed IMap — no god objects, no SPOF
+  Seed node election      IMQ-inspired scoring:
+                            score = w1*connectivity + w2*stability
+                                  + w3*betweennessCentrality + w4*vram
+  Min seed nodes          2 (never 1 — no SPOF)
+  Sharding strategy       Greedy, contiguous layer blocks, VRAM-aware
+  Dynamic resharding      Yes — on node join/leave
+  Weight format           GGUF (single file, quantization-aware)
+  Weight parser           DJL / llama.cpp JNI
+  Embeddings              Node 1 (first in pipeline)
+  Output projection       Last Node (last in pipeline)
+  Node registration       Push — nodes self-register on startup
+  VRAM reporting          JCuda self-reported, 10% headroom reserved
+
+  Shard assignment algorithm (greedy):
+    Sort healthy nodes by IMQ seed score descending.
+    For each node:
+      layersFit = node.availableVram / vramPerLayer
+      assign layers [currentLayer .. currentLayer + layersFit]
+      advance currentLayer
+    If all layers not assigned: throw InsufficientClusterVramException
+
+8.2  COORDINATOR + SCHEDULER
+  Batching                Dynamic continuous batching
+  Preemption              Configurable — ABORT strategy first
+  Coordinator count       2 (leader + standby)
+  Leader election         Hazelcast CP FencedLock
+  Queue full response     HTTP 503 + Retry-After estimate
+  Client protocol         REST (Javalin) + gRPC streaming
+  Data plane              gRPC (activations)
+  Control plane           Hazelcast (commands, state, events)
+  Priority queuing        PriorityBlockingQueue — HIGH=3, NORMAL=1, LOW=1
+  Concurrency             Java 21 Virtual Threads
+
+  Autoregressive loop:
+    1. Tokenizer.encode(chatTemplate.format(messages))  -> int[] tokens
+    2. PrefixCache.findLongestPrefix(tokens)            -> match
+    3. pipeline.forward(tokens) or forwardFromPosition()
+    4. Sampler.sample(logits, params, history)          -> int nextToken
+    5. If nextToken == EOS: break
+    6. Tokenizer.decodeToken(nextToken)                 -> String piece
+    7. Write piece to SSE / gRPC stream immediately
+    8. Repeat
+
+8.3  KV CACHE MANAGER
+  See section 6 above.
+
+8.4  HEALTH MONITOR
+  Node liveness           Hazelcast memberRemoved event (automatic)
   GPU health probe        JCuda every 5s, published to Hazelcast IMap
   Circuit breaker         Resilience4j per node, wraps all gRPC calls
-  VRAM warning            Configurable (default 90%)
-  VRAM critical           Configurable (default 98%) -> circuit open -> reshard
-  Metrics                 Micrometer + Prometheus + Grafana
-  Admin endpoints         Spring Boot Actuator
-  Node recovery           Auto reshard on Hazelcast memberAdded event
+  VRAM warning            90% (configurable) → aggressive eviction
+  VRAM critical           98% (configurable) → circuit open → reshard
+  Metrics                 Micrometer + Prometheus via JDK HttpServer
+  Admin endpoints         None (Spring removed) — Prometheus scrape only
 
-GPU health probe (runs on each node, every 5s):
-  JCuda.cudaMemGetInfo(free, total)
-  vramPressure = 1.0 - (free / total)
-  Publish NodeHealth to Hazelcast IMap("node-health")
-  NodeHealth { vramPressure, vramFreeBytes, temperature,
-               inferenceLatencyP99, timestamp }
-
-Health event cascade:
-  VRAM > 90%
-    -> KVCacheManager evicts cold blocks aggressively
-    -> Scheduler reduces batch size for that node
-
-  VRAM > 98%
-    -> Circuit breaker opens
-    -> Registry triggers reshard
-    -> In-flight request fails + retry hint to client
-
-  memberRemoved (Hazelcast)
-    -> Circuit breaker opens immediately
-    -> KVCacheManager marks node cache as lost
-    -> Registry recomputes ShardMap
-    -> Coordinator drains and restarts pipeline
-    -> Affected requests fail + retry hint
-
-  memberAdded (Hazelcast)
-    -> ShardLoader assigns and loads shard on new node
-    -> Node: IDLE -> LOADING -> READY
-    -> Registry updates ShardMap
-    -> Coordinator includes node in pipeline again
-
-Circuit breaker config (Resilience4j):
-  failureRateThreshold:        50   (% of calls)
-  slidingWindowSize:           10   (last N calls)
-  waitDurationInOpenState:     30s
-  State transitions: CLOSED -> OPEN -> HALF_OPEN -> CLOSED
-
-Metrics published (Micrometer):
-  gpu.vram.free.bytes         (gauge, per node)
-  gpu.vram.pressure           (gauge, 0.0-1.0)
-  inference.forward.duration  (timer, p50/p95/p99)
-  kvcache.evictions           (counter, per tier)
-  scheduler.queue.depth       (gauge)
-  coordinator.batch.size      (gauge)
-
-Admin endpoints (Spring Boot Actuator):
-  GET /actuator/health        -> cluster overview
-  GET /actuator/metrics       -> all metrics
-  GET /actuator/nodes         -> per-node status
-  GET /actuator/shardmap      -> current layer assignments
-
---------------------------------------------------------------------------------
-5.5  TOKENIZER
---------------------------------------------------------------------------------
-
-Responsibility:
-  Convert text <-> token IDs.
-  Called twice per generated token: encode at start, decodeToken per output.
-
-Decisions:
+8.5  TOKENIZER
   Library                 DJL SpTokenizer (SentencePiece JNI wrapper)
   Model coverage          LLaMA 2/3, Mistral, Gemma
-  Chat templates          ChatTemplateFormatter, from tokenizer_config.json
-  Streaming               decodeToken(int tokenId) -> String piece
-  Performance             ~50k sentences/sec — never a bottleneck
+  Chat templates          ChatTemplateFormatter, loaded from tokenizer_config.json
+  Performance             ~50k sentences/sec
 
-Tokenizer interface:
-  int[]  encode(String text)
-  String decode(int[] tokenIds)
-  String decodeToken(int tokenId)     // single token for streaming
-  int    bosTokenId()
-  int    eosTokenId()
-  int    padTokenId()
-  int    vocabSize()
-  String modelType()
-
-Chat template formatting (model-specific):
-  "llama3"  -> <|begin_of_text|><|start_header_id|>system<|end_header_id|>...
-  "mistral" -> [INST] ... [/INST]
-  "gemma"   -> <start_of_turn>user
-...<end_of_turn>
-  Loaded from tokenizer_config.json shipped with each HuggingFace model.
-  No hardcoding — fully data-driven.
-
---------------------------------------------------------------------------------
-5.6  SAMPLER
---------------------------------------------------------------------------------
-
-Responsibility:
-  Convert raw logits (float[vocab_size]) from last node
-  into a single chosen next token. Pure Java, zero external dependencies.
-
-Decisions:
-  Pipeline order          temperature -> topK -> topP -> softmax
-                          -> repetition penalty -> sample
-  Temperature             0.0-2.0, configurable per request
-  Top-K                   Configurable, 0 = disabled
-  Top-P                   Nucleus sampling, configurable
-  Repetition penalty      Configurable, 1.0 = disabled
-  Greedy mode             Configurable per request (deterministic)
-  Thread safety           ThreadLocalRandom, stateless design
-  Preset profiles         defaults / deterministic / creative
-
-Pipeline steps:
-  1. Temperature:    logits[i] /= temperature
-                     Low  -> deterministic | High -> creative
-  2. Top-K:          Zero out all but K highest logits
-  3. Top-P:          Zero out tokens below cumulative probability threshold
-  4. Softmax:        Convert to probabilities (numerically stable: subtract max)
-  5. Rep penalty:    Reduce logits of previously seen tokens
-  6. Sample:         Greedy (argmax) or weighted random
-
-Preset profiles:
-  defaults()        temperature=0.7, topK=50, topP=0.9, penalty=1.1
-  deterministic()   temperature=0.1, greedy=true  -> code gen, factual QA
-  creative()        temperature=1.2, topK=100     -> storytelling
-
-SamplingParams record fields:
-  float   temperature
-  int     topK
-  float   topP
-  float   repetitionPenalty
-  boolean greedy
-  int     maxTokens
-  int[]   stopTokenIds
+8.6  SAMPLER
+  Pure Java, zero external deps.
+  Pipeline: temperature -> topK -> topP -> softmax -> repetition penalty -> sample
+  Preset profiles: defaults / deterministic / creative
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-6. FULL TOKEN GENERATION DATA FLOW
+9. FULL TOKEN GENERATION DATA FLOW
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  1.  Client sends prompt via gRPC stream
-  2.  Coordinator receives InferenceRequest
-  3.  Scheduler queues + batches with other active requests
-  4.  ChatTemplateFormatter wraps messages in model-specific format
-  5.  Tokenizer.encode() -> int[] tokens
-  6.  PrefixCache.findLongestPrefix(tokens) -> check for shared prefix
-  7.  If prefix found: pipeline.forwardFromPosition(tokens, match)
-      Else:            pipeline.forward(tokens)
-  8.  Node 1: embedding lookup + forward layers 0-N -> activation
-  9.  Node 2..N: forward their layer ranges -> pass activation via gRPC
-  10. Last Node: final layers + output projection -> float[vocab] logits
-  11. Logits returned to Coordinator via gRPC
-  12. Sampler: temperature -> topK -> topP -> softmax -> penalty -> sample
-  13. int nextToken -> Tokenizer.decodeToken() -> String piece
-  14. String piece written to gRPC TokenResponse stream -> client sees it
-  15. Token appended to generated sequence
-  16. Repeat from step 6 until EOS token or maxTokens reached
+  1.  Client sends prompt via REST POST /v1/inference/stream
+  2.  Javalin routes to InferenceHandler
+  3.  Coordinator receives InferenceRequest (OpenAPI model)
+  4.  Scheduler queues + batches with other active requests
+  5.  ChatTemplateFormatter wraps messages in model-specific format
+  6.  Tokenizer.encode() -> int[] tokens
+  7.  PrefixCache.findLongestPrefix(tokens) -> check for shared prefix
+  8.  pipeline.forwardFromPosition() or pipeline.forward()
+  9.  Node 1: embedding lookup + forward layers 0-N -> activation (gRPC)
+  10. Node 2..N: forward their layer ranges -> pass activation via gRPC
+  11. Last Node: final layers + output projection -> float[vocab] logits
+  12. Logits returned to Coordinator via gRPC
+  13. Sampler: temperature -> topK -> topP -> softmax -> penalty -> sample
+  14. int nextToken -> Tokenizer.decodeToken() -> String piece
+  15. String piece written to SSE stream -> client sees it immediately
+  16. Token appended to generated sequence
+  17. Repeat from step 7 until EOS or maxTokens
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-7. FULL CONFIGURATION REFERENCE
+10. FULL CONFIGURATION REFERENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 cluster:
@@ -483,6 +366,7 @@ coordinator:
   count: 2
   grpc-port: 9090
   http-port: 8080
+  metrics-port: 9091
   max-queue-depth: 1000
   max-batch-size: 8
   preemption-enabled: true
@@ -496,7 +380,7 @@ scheduler:
     LOW: 1
 
 node:
-  grpc-port: 9091
+  grpc-port: 9092
   device-id: 0
   vram-headroom-fraction: 0.10
 
@@ -505,12 +389,9 @@ kv-cache:
     capacity-fraction: 0.85
     eviction: LRU
   cpu:
-    capacity-gb: 24
-    eviction: LFU
-  disk:
-    capacity-gb: 200
-    path: /mnt/kvcache
-    eviction: LFU
+    max-bytes: 8589934592    # 8GB — tune with your -Xmx
+    eviction: W-TinyLFU
+  # disk: REMOVED — RAM only
 
 health:
   probe-interval-ms: 5000
@@ -539,7 +420,7 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-8. TECHNOLOGY SUMMARY
+11. TECHNOLOGY SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Language              Java 21
@@ -551,13 +432,13 @@ sampling:
   Cluster messaging     Hazelcast Topics + IMap listeners
   RDMA networking       jVerbs
   Concurrency           Java 21 Virtual Threads
-  KV Cache L1           JCuda CudaBuffer (GPU)
-  KV Cache L2           OHC off-heap (CPU RAM)
-  KV Cache L3           Ehcache 3 (Disk)
+  REST API server       Javalin 6.x (NO Spring Boot)
+  REST API spec         OpenAPI 3.0 — jaxrs-spec generator
+  KV Cache L1           JCuda CudaBuffer (GPU VRAM)
+  KV Cache L2           Caffeine (JVM heap, W-TinyLFU)
+  KV Cache L3           REMOVED (no disk IO)
   Circuit breaker       Resilience4j
-  Metrics               Micrometer + Prometheus
-  Visualization         Grafana
-  Admin API             Spring Boot Actuator
+  Metrics               Micrometer + Prometheus (JDK HttpServer, no Spring)
   Tokenizer             DJL SpTokenizer (SentencePiece JNI)
   Weight format         GGUF
   Weight parser         DJL / llama.cpp JNI
@@ -565,49 +446,52 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-9. BUILD AND RUN
+12. BUILD STATUS (as of 2026-03-06)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  # Build all modules
-  mvn clean install -T 1C
+  hyper-stack-4j   SUCCESS  (parent pom)
+  api              SUCCESS  (63 source files compiled — OpenAPI + gRPC + proto)
+  registry         SUCCESS  (empty — no Java yet)
+  tokenizer        SUCCESS  (empty — no Java yet)
+  sampler          SUCCESS  (empty — no Java yet)
+  kvcache          SUCCESS  (empty — no Java yet)
+  coordinator      SUCCESS  (empty — no Java yet)
+  health           SUCCESS  (empty — no Java yet)
+  node             SUCCESS  (empty — no Java yet)
 
-  # Start coordinator (on stable machine)
-  java --enable-preview -jar coordinator/target/coordinator.jar \
-       --spring.config.location=cluster-config.yaml
+  Total build time: ~22s
 
-  # Start inference node (on each GPU machine)
-  java --enable-preview -jar node/target/node.jar \
-       --spring.config.location=cluster-config.yaml \
-       --node.device-id=0
-
-  # Load a model
-  curl -X POST http://coordinator:8080/models \
-       -H 'Content-Type: application/json' \
-       -d '{"modelId": "llama3-8b", "path": "/models/llama3-8b.gguf"}'
-
-  # Chat (gRPC streaming)
-  grpcurl -d '{"messages": [{"role": "user", "content": "Hello!"}]}' \
-          coordinator:9090 io.hyperstack4j.api.InferenceService/InferStream
+  Outstanding warnings to fix when convenient:
+    - javax.annotation-api declared twice in api/pom.xml
+    - prometheus-metrics-exporter-httpserver declared twice in parent pom
+      (safe to remove both — using JDK HttpServer instead)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-10. SUGGESTED IMPLEMENTATION ORDER
+13. IMPLEMENTATION ORDER (NEXT STEPS)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Phase 1 — Foundation
-    1. api         -> interfaces, records, gRPC proto, shared DTOs
-    2. sampler     -> pure Java, easiest, no dependencies
-    3. tokenizer   -> DJL wrapper, chat templates
+  Phase 1 — Foundation (no GPU required, pure Java)
+    1. sampler     -> SamplingParams record, Sampler interface,
+                      TemperatureStep, TopKStep, TopPStep, SoftmaxStep,
+                      RepetitionPenaltyStep, SampleStep, presets
+    2. tokenizer   -> Tokenizer interface, DJLTokenizer impl,
+                      ChatTemplateFormatter, model-specific templates
+    3. api         -> Clean up duplicate warnings in pom
 
   Phase 2 — Core Infrastructure
-    4. registry    -> ModelDescriptor, ShardMap, NodeDescriptor, ShardLoader
-    5. kvcache     -> tier management, prefix Trie, eviction policies
+    4. registry    -> NodeDescriptor, ModelDescriptor, ShardMap,
+                      ShardAssignment, ShardLoader, SeedScorer
+    5. kvcache     -> KVCacheManager, GpuTier (JCuda), CpuTier (Caffeine),
+                      PrefixCache (Trie), EvictionPolicy interface
 
   Phase 3 — Orchestration
-    6. coordinator -> pipeline, scheduler, continuous batching, leader election
-    7. node        -> GPU forward pass, JCublas SGEMM, gRPC server
+    6. coordinator -> InferencePipeline, Scheduler, ContinuousBatcher,
+                      LeaderElection, Javalin REST server,
+                      InferenceApi/ModelsApi/ClusterApi implementations
+    7. node        -> NodeServer (gRPC), ForwardPassHandler,
+                      JCublasForwardPass, ShardManager
 
   Phase 4 — Operations
-    8. health      -> GPU probes, circuit breakers, Micrometer metrics
-
-================================================================================
+    8. health      -> GpuHealthProbe, ClusterHealthMonitor,
+                      CircuitBreakerRegistry, MetricsExporter

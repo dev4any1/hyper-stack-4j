@@ -1,0 +1,84 @@
+package io.hyperstack4j.node;
+
+import io.hyperstack4j.registry.ShardAssignment;
+import io.hyperstack4j.registry.ShardMap;
+import org.junit.jupiter.api.Test;
+
+import java.time.Instant;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.*;
+
+class LocalInferencePipelineTest {
+
+    private static final int VOCAB      = 32000;
+    private static final int HIDDEN_DIM = 4096;
+    private static final int NUM_HEADS  = 32;
+
+    private ShardMap twoNodeMap() {
+        return new ShardMap("llama3-8b", 32, List.of(
+                new ShardAssignment("n1", "host1", 9091, 0, 16, true, false),
+                new ShardAssignment("n2", "host2", 9091, 16, 32, false, true)
+        ), Instant.now());
+    }
+
+    @Test
+    void single_handler_pipeline_returns_logits() {
+        StubForwardPassHandler handler = new StubForwardPassHandler(55);
+        LocalInferencePipeline pipeline = LocalInferencePipeline.from(
+                twoNodeMap(), handler, VOCAB, HIDDEN_DIM, NUM_HEADS);
+
+        float[] logits = pipeline.forward("req-1", new int[]{1, 2, 3}, 0);
+
+        assertThat(logits).hasSize(VOCAB);
+        assertThat(logits[55]).isGreaterThan(0.0f);
+    }
+
+    @Test
+    void pipeline_calls_each_stage_once_per_forward() {
+        StubForwardPassHandler handler = new StubForwardPassHandler();
+        LocalInferencePipeline pipeline = LocalInferencePipeline.from(
+                twoNodeMap(), handler, VOCAB, HIDDEN_DIM, NUM_HEADS);
+
+        pipeline.forward("req-1", new int[]{1, 2, 3}, 0);
+
+        // 2 nodes → handler called twice
+        assertThat(handler.callCount()).isEqualTo(2);
+    }
+
+    @Test
+    void pipeline_with_per_stage_handlers() {
+        StubForwardPassHandler h1 = new StubForwardPassHandler();
+        StubForwardPassHandler h2 = new StubForwardPassHandler(88);
+
+        LocalInferencePipeline pipeline = LocalInferencePipeline.from(
+                twoNodeMap(), List.of(h1, h2), VOCAB, HIDDEN_DIM, NUM_HEADS);
+
+        float[] logits = pipeline.forward("req-1", new int[]{1, 2, 3}, 0);
+
+        assertThat(logits[88]).isGreaterThan(0.0f);
+        assertThat(h1.callCount()).isEqualTo(1);
+        assertThat(h2.callCount()).isEqualTo(1);
+    }
+
+    @Test
+    void stage_count_matches_shard_map_node_count() {
+        LocalInferencePipeline pipeline = LocalInferencePipeline.from(
+                twoNodeMap(), new StubForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
+        assertThat(pipeline.stageCount()).isEqualTo(2);
+    }
+
+    @Test
+    void vocab_size_matches_context() {
+        LocalInferencePipeline pipeline = LocalInferencePipeline.from(
+                twoNodeMap(), new StubForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
+        assertThat(pipeline.vocabSize()).isEqualTo(VOCAB);
+    }
+
+    @Test
+    void rejects_handler_count_mismatch() {
+        assertThatThrownBy(() -> LocalInferencePipeline.from(
+                twoNodeMap(), List.of(new StubForwardPassHandler()), VOCAB, HIDDEN_DIM, NUM_HEADS))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+}

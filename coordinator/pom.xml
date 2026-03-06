@@ -37,6 +37,10 @@
             <artifactId>kvcache</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.hyperstack4j</groupId>
+            <artifactId>node</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.hazelcast</groupId>
             <artifactId>hazelcast</artifactId>
         </dependency>

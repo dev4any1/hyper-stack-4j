@@ -20,7 +20,7 @@
             <groupId>io.hyperstack4j</groupId>
             <artifactId>api</artifactId>
         </dependency>
-        <dependency>
+                <dependency>
             <groupId>io.hyperstack4j</groupId>
             <artifactId>registry</artifactId>
         </dependency>

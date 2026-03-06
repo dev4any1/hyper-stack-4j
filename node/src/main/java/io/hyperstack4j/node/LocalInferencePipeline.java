@@ -1,0 +1,100 @@
+package io.hyperstack4j.node;
+
+import io.hyperstack4j.registry.ShardAssignment;
+import io.hyperstack4j.registry.ShardMap;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * In-process multi-node pipeline — chains multiple ForwardPassHandlers in
+ * ShardMap order without any gRPC or network.
+ *
+ * This is the KEY class for integration testing: - Wires together N
+ * StubForwardPassHandlers - Implements coordinator's InferencePipeline
+ * interface - Lets GenerationLoop run end-to-end with zero network
+ *
+ * In production this is replaced by NodePipelineClient which makes real gRPC
+ * calls. The interface is identical — GenerationLoop doesn't know or care which
+ * implementation it's talking to.
+ *
+ * Usage: ShardMap map = planner.plan("llama3", 32, vramPerLayer, nodes);
+ * LocalInferencePipeline pipeline = LocalInferencePipeline.from(map, handler,
+ * vocabSize, hiddenDim, numHeads); GenerationLoop loop = new
+ * GenerationLoop(tokenizer, sampler, pipeline, kvCache);
+ */
+public final class LocalInferencePipeline implements InferencePipeline {
+
+	private final List<NodeStage> stages;
+	private final int vocabSize;
+
+	private LocalInferencePipeline(List<NodeStage> stages, int vocabSize) {
+		this.stages = stages;
+		this.vocabSize = vocabSize;
+	}
+
+	/**
+	 * Build a pipeline from a ShardMap, using the same handler for all stages.
+	 * Useful for single-handler integration tests.
+	 */
+	public static LocalInferencePipeline from(ShardMap shardMap, ForwardPassHandler handler, int vocabSize,
+			int hiddenDim, int numHeads) {
+		List<NodeStage> stages = new ArrayList<>();
+		for (ShardAssignment assignment : shardMap.assignments()) {
+			ShardContext ctx = ShardContext.from(assignment, vocabSize, hiddenDim, numHeads);
+			stages.add(new NodeStage(ctx, handler));
+		}
+		return new LocalInferencePipeline(stages, vocabSize);
+	}
+
+	/**
+	 * Build a pipeline with a distinct handler per stage (for heterogeneous tests).
+	 */
+	public static LocalInferencePipeline from(ShardMap shardMap, List<ForwardPassHandler> handlers, int vocabSize,
+			int hiddenDim, int numHeads) {
+		if (handlers.size() != shardMap.nodeCount())
+			throw new IllegalArgumentException("handlers.size() must equal shardMap.nodeCount()");
+
+		List<NodeStage> stages = new ArrayList<>();
+		List<ShardAssignment> assignments = shardMap.assignments();
+		for (int i = 0; i < assignments.size(); i++) {
+			ShardContext ctx = ShardContext.from(assignments.get(i), vocabSize, hiddenDim, numHeads);
+			stages.add(new NodeStage(ctx, handlers.get(i)));
+		}
+		return new LocalInferencePipeline(stages, vocabSize);
+	}
+
+	@Override
+	public float[] forward(String requestId, int[] tokens, int startPos) {
+		float[] activations = null;
+
+		for (int i = 0; i < stages.size(); i++) {
+			NodeStage stage = stages.get(i);
+			ForwardRequest req = (i == 0) ? ForwardRequest.withTokens(requestId, tokens, startPos)
+					: ForwardRequest.withActivations(requestId, activations, startPos);
+
+			ForwardResult result = stage.handler().forward(req, stage.context());
+
+			if (result.isFinalNode()) {
+				return result.logits();
+			}
+			activations = result.activations();
+		}
+
+		throw new IllegalStateException("Pipeline completed without a final-node result");
+	}
+
+	@Override
+	public int vocabSize() {
+		return vocabSize;
+	}
+
+	public int stageCount() {
+		return stages.size();
+	}
+
+	// ── Inner type ────────────────────────────────────────────────────────────
+
+	private record NodeStage(ShardContext context, ForwardPassHandler handler) {
+	}
+}
