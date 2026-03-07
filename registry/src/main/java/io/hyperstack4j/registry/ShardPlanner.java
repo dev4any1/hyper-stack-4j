@@ -72,7 +72,15 @@ public final class ShardPlanner {
             long layersFit = node.usableVramBytes() / vramPerLayerBytes;
             if (layersFit < 1) continue; // node can't hold even one layer
 
-            int endLayer = (int) Math.min(currentLayer + layersFit, totalLayers);
+            int remainingLayers = totalLayers - currentLayer;
+            int remainingNodes  = eligible.size() - assignments.size();
+
+            long maxLayers = Math.min(
+                    layersFit,
+                    remainingLayers - (remainingNodes - 1) // leave ≥1 layer per remaining node
+            );
+
+            int endLayer = currentLayer + (int) maxLayers;
 
             assignments.add(new ShardAssignment(
                     node.nodeId(),

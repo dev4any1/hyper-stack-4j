@@ -1,10 +1,10 @@
 package io.hyperstack4j.kvcache;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
+
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 /**
  * CPU-tier KV cache backed by Caffeine (W-TinyLFU eviction).

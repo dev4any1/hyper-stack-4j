@@ -1,9 +1,9 @@
 package io.hyperstack4j.kvcache;
 
-import org.junit.jupiter.api.Test;
-
 import static io.hyperstack4j.kvcache.KVBlockFactory.block;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import org.junit.jupiter.api.Test;
 
 class KVCacheManagerTest {
 

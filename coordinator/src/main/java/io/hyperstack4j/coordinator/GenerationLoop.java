@@ -1,15 +1,16 @@
 package io.hyperstack4j.coordinator;
 
-import io.hyperstack4j.kvcache.KVCacheManager;
-import io.hyperstack4j.sampler.Sampler;
-import io.hyperstack4j.tokenizer.ChatTemplateFormatter;
-import io.hyperstack4j.tokenizer.Tokenizer;
-import io.hyperstack4j.node.InferencePipeline;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Logger;
+
+import io.hyperstack4j.kvcache.KVCacheManager;
+import io.hyperstack4j.node.InferencePipeline;
+import io.hyperstack4j.sampler.Sampler;
+import io.hyperstack4j.tokenizer.ChatTemplateFormatter;
+import io.hyperstack4j.tokenizer.Tokenizer;
 
 /**
  * Core autoregressive generation loop.

@@ -2,7 +2,7 @@
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
   JDK 21 · Maven · Java-native · Commodity GPU Cluster
-  Last updated: 2026-03-06 (session 2)
+  Last updated: 2026-03-07 (session 3)
 ================================================================================
 
 
@@ -46,7 +46,8 @@ Far cheaper than one 64GB GPU.
 3. MAVEN PROJECT STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Multi-module Maven project, JDK 21 throughout. BUILD SUCCESS as of 2026-03-06.
+Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
+2026-03-07. 85 Java source files, 6090 lines. 11/11 tests green.
 
   hyper-stack-4j/               <- parent POM
   |
@@ -54,13 +55,32 @@ Multi-module Maven project, JDK 21 throughout. BUILD SUCCESS as of 2026-03-06.
   |   +-- src/main/resources/openapi.yaml
   |   +-- src/main/proto/inference.proto
   |
-  +-- registry/                 <- Model Registry + Shard Loader
-  +-- coordinator/              <- Coordinator + Scheduler + REST server
-  +-- node/                     <- Inference Node (runs on each GPU machine)
-  +-- kvcache/                  <- KV Cache Manager
-  +-- tokenizer/                <- Tokenizer
-  +-- sampler/                  <- Sampler
-  +-- health/                   <- Health Monitor
+  +-- registry/                 <- NodeDescriptor, ShardPlanner, ShardMap,
+  |                                SeedScorer, InsufficientClusterVramException
+  +-- coordinator/              <- GenerationLoop, RequestScheduler,
+  |                                InferenceRequest, GenerationResult,
+  |                                TokenConsumer, RequestPriority
+  +-- node/                     <- InferencePipeline, LocalInferencePipeline,
+  |                                ForwardPassHandler, StubForwardPassHandler,
+  |                                ForwardRequest, ForwardResult, ShardContext
+  +-- kvcache/                  <- KVCacheManager, GpuKVCache, CpuKVCache,
+  |                                PrefixCache, KVBlock, KVKey, KVCache
+  +-- tokenizer/                <- Tokenizer, StubTokenizer, DJLTokenizer,
+  |                                ChatMessage, ChatTemplate,
+  |                                ChatTemplateFormatter
+  +-- sampler/                  <- Sampler, SamplingParams, SamplingStep,
+  |                                TemperatureStep, TopKStep, TopPStep,
+  |                                SoftmaxStep, RepetitionPenaltyStep,
+  |                                SampleStep
+  +-- health/                   <- CircuitBreaker, CircuitState, HealthEvaluator,
+  |                                HealthEvent, HealthThresholds, NodeHealth
+  +-- integration/              <- Multi-JVM cluster integration tests
+      +-- ClusterHarness        <- forks 3 node JVMs via ProcessBuilder
+      +-- EmbeddedNodeServer    <- gRPC NodeServiceImpl backed by StubForwardPassHandler
+      +-- NodeMain              <- JVM entry point, prints READY:<nodeId>:<port>
+      +-- ProcessPipelineClient <- InferencePipeline over real gRPC channels
+      +-- InProcessClusterIT    <- in-process 3-node test, zero network
+      +-- ThreeNodeClusterIT    <- full 3-JVM test over real sockets
 
 Group ID:    io.hyperstack4j
 Artifact ID: hyper-stack-4j
@@ -137,8 +157,8 @@ REMOVED from original design (all caused transitive dependency failures):
   Java package: io.hyperstack4j.api.grpc
 
   Services:
-    InferenceService   — client → coordinator (Infer, InferStream)
-    NodeService        — coordinator → each GPU node
+    InferenceService   — client -> coordinator (Infer, InferStream)
+    NodeService        — coordinator -> each GPU node
                          (ForwardPass, LoadShard, UnloadShard, GetNodeStatus)
     RegistryService    — internal registry queries
                          (GetShardMap, RegisterNode, RecomputeShards)
@@ -174,8 +194,9 @@ REMOVED from original design (all caused transitive dependency failures):
       |
       +-- Javalin REST server (port 8080)
       +-- Tokenizer (DJL SentencePiece)
-      +-- Scheduler (continuous batching, virtual threads)
-      +-- Sampler (pure Java)
+      +-- RequestScheduler (CompletableFuture, virtual threads)
+      +-- GenerationLoop (autoregressive)
+      +-- Sampler (pure Java pipeline)
       +-- PrefixCache (Trie)
       +-- InferencePipeline
                 |
@@ -222,7 +243,7 @@ Configuration:
 
 Prefix cache (unchanged):
   Trie structure, checked before every forward pass.
-  Win: 16 clients with same 500-token system prompt → compute once, reuse 16x.
+  Win: 16 clients with same 500-token system prompt -> compute once, reuse 16x.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -255,16 +276,17 @@ Example metrics endpoint:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-8. ACTORS — DESIGN DECISIONS (unchanged from session 1)
+8. ACTORS — DESIGN DECISIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-8.1  MODEL REGISTRY + SHARD LOADER
+8.1  MODEL REGISTRY + SHARD PLANNER
   Registry placement      Hazelcast distributed IMap — no god objects, no SPOF
   Seed node election      IMQ-inspired scoring:
                             score = w1*connectivity + w2*stability
                                   + w3*betweennessCentrality + w4*vram
   Min seed nodes          2 (never 1 — no SPOF)
   Sharding strategy       Greedy, contiguous layer blocks, VRAM-aware
+  Fair distribution       Each eligible node guaranteed >= 1 layer (see §8.1a)
   Dynamic resharding      Yes — on node join/leave
   Weight format           GGUF (single file, quantization-aware)
   Weight parser           DJL / llama.cpp JNI
@@ -273,13 +295,21 @@ Example metrics endpoint:
   Node registration       Push — nodes self-register on startup
   VRAM reporting          JCuda self-reported, 10% headroom reserved
 
-  Shard assignment algorithm (greedy):
-    Sort healthy nodes by IMQ seed score descending.
-    For each node:
-      layersFit = node.availableVram / vramPerLayer
-      assign layers [currentLayer .. currentLayer + layersFit]
-      advance currentLayer
-    If all layers not assigned: throw InsufficientClusterVramException
+  8.1a  Fair layer distribution (ShardPlanner)
+  -----------------------------------------------
+  The greedy algorithm is capped to prevent a large-VRAM node from consuming
+  all remaining layers and starving later nodes. For each assignment:
+
+    remainingLayers = totalLayers - currentLayer
+    remainingNodes  = eligible.size() - assignments.size()
+    maxLayers       = min(layersFit, remainingLayers - (remainingNodes - 1))
+    endLayer        = currentLayer + maxLayers
+
+  The term (remainingNodes - 1) reserves at least one layer per node still
+  waiting to be assigned. Without this cap, a node with abundant VRAM could
+  exhaust the layer budget, leaving subsequent nodes with nothing to do and
+  causing ShardPlanner to throw InsufficientClusterVramException even when the
+  cluster has sufficient total VRAM.
 
 8.2  COORDINATOR + SCHEDULER
   Batching                Dynamic continuous batching
@@ -291,16 +321,38 @@ Example metrics endpoint:
   Data plane              gRPC (activations)
   Control plane           Hazelcast (commands, state, events)
   Priority queuing        PriorityBlockingQueue — HIGH=3, NORMAL=1, LOW=1
-  Concurrency             Java 21 Virtual Threads
+  Concurrency             Java 21 Virtual Threads + CompletableFuture
 
-  Autoregressive loop:
+  Reactive scheduler (RequestScheduler):
+  ----------------------------------------
+  Every request — streaming or blocking — is dispatched on its own Virtual
+  Thread. The public API is fully reactive via CompletableFuture.
+
+  submit(request, consumer) -> CompletableFuture<GenerationResult>
+    1. CompletableFuture<GenerationResult> created and stored in
+       ConcurrentHashMap<requestId, future> BEFORE queue.offer()
+    2. request.offer()'d into PriorityBlockingQueue (HIGH priority first)
+    3. Virtual thread spawned — calls generationLoop.generate()
+    4. On success: future.complete(result)
+       On failure: future.completeExceptionally(e)  <- never silently swallowed
+    5. Returns future immediately to caller
+
+  submitAndWait(request) -> GenerationResult
+    Delegates to submit(request, TokenConsumer.discard()).join()
+    The caller blocks ONLY on its own future — N concurrent callers run fully
+    in parallel with no shared lock or sequential bottleneck between them.
+
+  When queue is full: QueueFullException thrown with retryAfterSeconds hint.
+  REST layer translates this to HTTP 503 + Retry-After header.
+
+  Autoregressive loop (GenerationLoop.generate):
     1. Tokenizer.encode(chatTemplate.format(messages))  -> int[] tokens
     2. PrefixCache.findLongestPrefix(tokens)            -> match
     3. pipeline.forward(tokens) or forwardFromPosition()
     4. Sampler.sample(logits, params, history)          -> int nextToken
     5. If nextToken == EOS: break
     6. Tokenizer.decodeToken(nextToken)                 -> String piece
-    7. Write piece to SSE / gRPC stream immediately
+    7. TokenConsumer.accept(piece, tokenId, step)  <- SSE / gRPC stream
     8. Repeat
 
 8.3  KV CACHE MANAGER
@@ -310,8 +362,8 @@ Example metrics endpoint:
   Node liveness           Hazelcast memberRemoved event (automatic)
   GPU health probe        JCuda every 5s, published to Hazelcast IMap
   Circuit breaker         Resilience4j per node, wraps all gRPC calls
-  VRAM warning            90% (configurable) → aggressive eviction
-  VRAM critical           98% (configurable) → circuit open → reshard
+  VRAM warning            90% (configurable) -> aggressive eviction
+  VRAM critical           98% (configurable) -> circuit open -> reshard
   Metrics                 Micrometer + Prometheus via JDK HttpServer
   Admin endpoints         None (Spring removed) — Prometheus scrape only
 
@@ -320,6 +372,9 @@ Example metrics endpoint:
   Model coverage          LLaMA 2/3, Mistral, Gemma
   Chat templates          ChatTemplateFormatter, loaded from tokenizer_config.json
   Performance             ~50k sentences/sec
+  Thread safety           StubTokenizer uses HashMap + unsynchronized nextId —
+                          NOT thread-safe for concurrent encode() calls with new
+                          tokens. Pre-warm (or use DJLTokenizer) in production.
 
 8.6  SAMPLER
   Pure Java, zero external deps.
@@ -328,30 +383,100 @@ Example metrics endpoint:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-9. FULL TOKEN GENERATION DATA FLOW
+9. INTEGRATION TEST INFRASTRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The integration module provides two test suites, both run by maven-failsafe-plugin
+under mvn verify.
+
+9.1  InProcessClusterIT  (fast, zero network)
+  Wires 3 StubForwardPassHandlers via LocalInferencePipeline in the same JVM.
+  No gRPC, no sockets. Tests the full GenerationLoop + RequestScheduler stack.
+  ~250ms total.
+
+9.2  ThreeNodeClusterIT  (real network, real JVMs)
+  ClusterHarness forks 3 separate JVM processes via ProcessBuilder:
+
+    NodeMain JVM #1  (port 19092, -Xmx4g -XX:+UseZGC)
+    NodeMain JVM #2  (port 19093, -Xmx4g -XX:+UseZGC)
+    NodeMain JVM #3  (port 19094, -Xmx4g -XX:+UseZGC)
+
+  Each NodeMain starts an EmbeddedNodeServer (gRPC NodeServiceImpl backed by
+  StubForwardPassHandler) and prints READY:<nodeId>:<port> to stdout.
+  ClusterHarness reads stdout until all 3 READY signals are received.
+
+  ProcessPipelineClient implements InferencePipeline with real gRPC channels
+  to all 3 ports. ForwardPass calls are chained in ShardMap order.
+
+  GenerationLoop + RequestScheduler run in the coordinator (test) JVM.
+
+  Memory budget (16GB host):
+    3 nodes × -Xmx4g  = 12GB
+    coordinator JVM     = 2GB
+    OS + overhead       = 2GB
+                       ------
+                        16GB  ✓
+
+  Recommended model for local testing: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+    vocab_size=32000, hidden_dim=2048, layers=22, heads=32, size=~670MB
+    Layer split across 3 nodes: 8 / 7 / 7
+
+9.3  Concurrent request tests
+  Both ITs test concurrent requests via scheduler.submit() which returns
+  a CompletableFuture per request. Tests use CompletableFuture.allOf() to
+  wait for all N requests in parallel — no CountDownLatch, no polling.
+
+  Pattern:
+    List<CompletableFuture<GenerationResult>> futures = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+        futures.add(scheduler.submit(req_i, TokenConsumer.discard()));
+    }
+    CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                     .get(30, TimeUnit.SECONDS);
+
+9.4  Run commands
+  # Full suite — forks 3 JVM node processes
+  mvn verify -pl integration
+
+  # In-process only
+  mvn verify -pl integration -Dit.test=InProcessClusterIT
+
+  # Skip ITs
+  mvn verify -DskipITs
+
+  # With real model (when GpuForwardPassHandler implemented)
+  mvn verify -pl integration -Dit.model.path=/models/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. FULL TOKEN GENERATION DATA FLOW
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   1.  Client sends prompt via REST POST /v1/inference/stream
   2.  Javalin routes to InferenceHandler
   3.  Coordinator receives InferenceRequest (OpenAPI model)
-  4.  Scheduler queues + batches with other active requests
-  5.  ChatTemplateFormatter wraps messages in model-specific format
-  6.  Tokenizer.encode() -> int[] tokens
-  7.  PrefixCache.findLongestPrefix(tokens) -> check for shared prefix
-  8.  pipeline.forwardFromPosition() or pipeline.forward()
-  9.  Node 1: embedding lookup + forward layers 0-N -> activation (gRPC)
-  10. Node 2..N: forward their layer ranges -> pass activation via gRPC
-  11. Last Node: final layers + output projection -> float[vocab] logits
-  12. Logits returned to Coordinator via gRPC
-  13. Sampler: temperature -> topK -> topP -> softmax -> penalty -> sample
-  14. int nextToken -> Tokenizer.decodeToken() -> String piece
-  15. String piece written to SSE stream -> client sees it immediately
-  16. Token appended to generated sequence
-  17. Repeat from step 7 until EOS or maxTokens
+  4.  RequestScheduler.submit(request, consumer)
+        -> CompletableFuture registered in ConcurrentHashMap
+        -> Virtual thread spawned
+  5.  GenerationLoop.generate() begins on virtual thread
+  6.  ChatTemplateFormatter wraps messages in model-specific format
+  7.  Tokenizer.encode() -> int[] tokens
+  8.  PrefixCache.findLongestPrefix(tokens) -> check for shared prefix
+  9.  pipeline.forwardFromPosition() or pipeline.forward()
+  10. Node 1: embedding lookup + forward layers 0-N -> activation (gRPC)
+  11. Node 2..N: forward their layer ranges -> pass activation via gRPC
+  12. Last Node: final layers + output projection -> float[vocab] logits
+  13. Logits returned to Coordinator via gRPC
+  14. Sampler: temperature -> topK -> topP -> softmax -> penalty -> sample
+  15. int nextToken -> Tokenizer.decodeToken() -> String piece
+  16. TokenConsumer.accept(piece, tokenId, step) -> SSE or gRPC stream
+  17. Token appended to generated sequence
+  18. Repeat from step 8 until EOS or maxTokens
+  19. future.complete(GenerationResult) — caller's join() returns
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-10. FULL CONFIGURATION REFERENCE
+11. FULL CONFIGURATION REFERENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 cluster:
@@ -420,7 +545,7 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-11. TECHNOLOGY SUMMARY
+12. TECHNOLOGY SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Language              Java 21
@@ -431,7 +556,7 @@ sampling:
   Data plane            gRPC + Protocol Buffers
   Cluster messaging     Hazelcast Topics + IMap listeners
   RDMA networking       jVerbs
-  Concurrency           Java 21 Virtual Threads
+  Concurrency           Java 21 Virtual Threads + CompletableFuture
   REST API server       Javalin 6.x (NO Spring Boot)
   REST API spec         OpenAPI 3.0 — jaxrs-spec generator
   KV Cache L1           JCuda CudaBuffer (GPU VRAM)
@@ -446,52 +571,59 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-12. BUILD STATUS (as of 2026-03-06)
+13. BUILD STATUS (as of 2026-03-07)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   hyper-stack-4j   SUCCESS  (parent pom)
   api              SUCCESS  (63 source files compiled — OpenAPI + gRPC + proto)
-  registry         SUCCESS  (empty — no Java yet)
-  tokenizer        SUCCESS  (empty — no Java yet)
-  sampler          SUCCESS  (empty — no Java yet)
-  kvcache          SUCCESS  (empty — no Java yet)
-  coordinator      SUCCESS  (empty — no Java yet)
-  health           SUCCESS  (empty — no Java yet)
-  node             SUCCESS  (empty — no Java yet)
+  registry         SUCCESS  (NodeDescriptor, ShardPlanner, ShardMap, SeedScorer)
+  tokenizer        SUCCESS  (StubTokenizer, DJLTokenizer, ChatTemplateFormatter)
+  sampler          SUCCESS  (full pipeline — 8 steps, 3 preset profiles)
+  kvcache          SUCCESS  (GpuKVCache, CpuKVCache, PrefixCache, KVCacheManager)
+  health           SUCCESS  (CircuitBreaker, HealthEvaluator, NodeHealth)
+  node             SUCCESS  (LocalInferencePipeline, StubForwardPassHandler)
+  coordinator      SUCCESS  (GenerationLoop, RequestScheduler)
+  integration      SUCCESS  (InProcessClusterIT + ThreeNodeClusterIT)
 
-  Total build time: ~22s
+  Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
+  Total build time: ~15s
 
-  Outstanding warnings to fix when convenient:
-    - javax.annotation-api declared twice in api/pom.xml
-    - prometheus-metrics-exporter-httpserver declared twice in parent pom
-      (safe to remove both — using JDK HttpServer instead)
+  Module breakdown:
+    85 Java source files
+    6090 lines total
+    49 production classes
+    36 test classes
+    11 integration tests (2 suites × multi-test)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-13. IMPLEMENTATION ORDER (NEXT STEPS)
+14. IMPLEMENTATION ORDER — STATUS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Phase 1 — Foundation (no GPU required, pure Java)
-    1. sampler     -> SamplingParams record, Sampler interface,
-                      TemperatureStep, TopKStep, TopPStep, SoftmaxStep,
-                      RepetitionPenaltyStep, SampleStep, presets
-    2. tokenizer   -> Tokenizer interface, DJLTokenizer impl,
-                      ChatTemplateFormatter, model-specific templates
-    3. api         -> Clean up duplicate warnings in pom
+  Phase 1 — Foundation  [COMPLETE]
+    [x] sampler     SamplingParams, Sampler, all 6 pipeline steps, 3 presets
+    [x] tokenizer   Tokenizer, StubTokenizer, DJLTokenizer,
+                    ChatTemplateFormatter, ChatTemplate, ChatMessage
 
-  Phase 2 — Core Infrastructure
-    4. registry    -> NodeDescriptor, ModelDescriptor, ShardMap,
-                      ShardAssignment, ShardLoader, SeedScorer
-    5. kvcache     -> KVCacheManager, GpuTier (JCuda), CpuTier (Caffeine),
-                      PrefixCache (Trie), EvictionPolicy interface
+  Phase 2 — Core Infrastructure  [COMPLETE]
+    [x] registry    NodeDescriptor, ShardMap, ShardAssignment,
+                    ShardPlanner (with fair distribution), SeedScorer
+    [x] kvcache     KVCacheManager, GpuKVCache, CpuKVCache,
+                    PrefixCache (Trie), KVBlock, KVKey
 
-  Phase 3 — Orchestration
-    6. coordinator -> InferencePipeline, Scheduler, ContinuousBatcher,
-                      LeaderElection, Javalin REST server,
-                      InferenceApi/ModelsApi/ClusterApi implementations
-    7. node        -> NodeServer (gRPC), ForwardPassHandler,
-                      JCublasForwardPass, ShardManager
+  Phase 3 — Orchestration  [COMPLETE — stub impl]
+    [x] coordinator GenerationLoop, RequestScheduler (reactive, CompletableFuture),
+                    InferenceRequest, GenerationResult, TokenConsumer
+    [x] node        LocalInferencePipeline, ForwardPassHandler,
+                    StubForwardPassHandler, ForwardRequest/Result
+    [x] integration ClusterHarness, EmbeddedNodeServer, NodeMain,
+                    ProcessPipelineClient, InProcessClusterIT, ThreeNodeClusterIT
 
-  Phase 4 — Operations
-    8. health      -> GpuHealthProbe, ClusterHealthMonitor,
-                      CircuitBreakerRegistry, MetricsExporter
+  Phase 3 — Orchestration  [PENDING — real impl]
+    [ ] node        GpuForwardPassHandler (JCuda/JCublas)
+    [ ] coordinator Javalin REST server wired to GenerationLoop
+    [ ] coordinator Hazelcast leader election
+
+  Phase 4 — Operations  [PENDING]
+    [ ] health      GpuHealthProbe, ClusterHealthMonitor,
+                    CircuitBreakerRegistry, MetricsExporter

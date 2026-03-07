@@ -1,0 +1,187 @@
+package io.hyperstack4j.integration;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import io.hyperstack4j.coordinator.GenerationLoop;
+import io.hyperstack4j.coordinator.GenerationResult;
+import io.hyperstack4j.coordinator.InferenceRequest;
+import io.hyperstack4j.coordinator.RequestPriority;
+import io.hyperstack4j.coordinator.TokenConsumer;
+import io.hyperstack4j.kvcache.CpuKVCache;
+import io.hyperstack4j.kvcache.GpuKVCache;
+import io.hyperstack4j.kvcache.KVCacheManager;
+import io.hyperstack4j.node.ForwardPassHandler;
+import io.hyperstack4j.node.LocalInferencePipeline;
+import io.hyperstack4j.node.StubForwardPassHandler;
+import io.hyperstack4j.registry.NodeDescriptor;
+import io.hyperstack4j.registry.NodeStatus;
+import io.hyperstack4j.registry.ShardMap;
+import io.hyperstack4j.registry.ShardPlanner;
+import io.hyperstack4j.sampler.Sampler;
+import io.hyperstack4j.sampler.SamplingParams;
+import io.hyperstack4j.tokenizer.ChatMessage;
+import io.hyperstack4j.tokenizer.StubTokenizer;
+
+/**
+ * In-process 3-node integration test.
+ *
+ * Wires 3 StubForwardPassHandlers via LocalInferencePipeline,
+ * runs a full GenerationLoop end-to-end, zero network.
+ *
+ * Run: mvn verify -pl integration -Dit.test=InProcessClusterIT
+ */
+@DisplayName("In-Process 3-Node Cluster")
+class InProcessClusterIT {
+
+    // TinyLlama-1.1B shape
+    private static final int VOCAB_SIZE   = 32_000;
+    private static final int HIDDEN_DIM   = 2_048;
+    private static final int NUM_HEADS    = 32;
+    private static final int TOTAL_LAYERS = 22;
+    private static final int STUB_WINNER  = 42; // StubForwardPassHandler puts 100.0f here
+
+    private LocalInferencePipeline pipeline;
+    private GenerationLoop         generationLoop;
+
+    @BeforeEach
+    void setUp() {
+        // ── 1. Build 3-node shard map ─────────────────────────────────────────
+        long vramPerLayer = 186L * 1024 * 1024;
+        long nodeVram     = 4L   * 1024 * 1024 * 1024;
+
+        List<NodeDescriptor> nodes = List.of(
+                nodeDescriptor("node-1", "localhost", 9092, nodeVram),
+                nodeDescriptor("node-2", "localhost", 9093, nodeVram),
+                nodeDescriptor("node-3", "localhost", 9094, nodeVram)
+        );
+
+        ShardMap shardMap = ShardPlanner.create().plan("tinyllama", TOTAL_LAYERS, vramPerLayer, nodes);
+        assertThat(shardMap.nodeCount()).as("All 3 nodes should receive shards").isEqualTo(3);
+
+        // ── 2. One handler per stage ──────────────────────────────────────────
+        List<ForwardPassHandler> handlers = List.of(
+                new StubForwardPassHandler(),
+                new StubForwardPassHandler(),
+                new StubForwardPassHandler(STUB_WINNER)   // last node → logits
+        );
+
+        pipeline = LocalInferencePipeline.from(shardMap, handlers, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
+
+        // ── 3. Wire coordinator components ────────────────────────────────────
+        generationLoop = new GenerationLoop(
+                new StubTokenizer(),
+                Sampler.create(),
+                pipeline,
+                new KVCacheManager(
+                        new GpuKVCache(512L * 1024 * 1024),
+                        new CpuKVCache(1024)
+                )
+        );
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("Pipeline has 3 stages covering all 22 layers")
+    void pipelineHasThreeStages() {
+        assertThat(pipeline.stageCount()).isEqualTo(3);
+        assertThat(pipeline.vocabSize()).isEqualTo(VOCAB_SIZE);
+    }
+
+    @Test
+    @DisplayName("Single forward pass returns logits of correct size")
+    void singleForwardPassReturnsLogits() {
+        float[] logits = pipeline.forward("req-001", new int[]{1, 2, 3}, 0);
+        assertThat(logits).hasSize(VOCAB_SIZE);
+        assertThat(logits[STUB_WINNER]).isGreaterThan(logits[0]);
+    }
+
+    @Test
+    @DisplayName("GenerationLoop produces tokens up to maxTokens")
+    void generationLoopProducesTokens() {
+        int maxTokens = 10;
+        InferenceRequest request = InferenceRequest.of(
+                "tinyllama",
+                List.of(ChatMessage.user("Hello, world!")),
+                SamplingParams.defaults().withMaxTokens(maxTokens),
+                RequestPriority.NORMAL
+        );
+
+        List<String> pieces = new ArrayList<>();
+        GenerationResult result = generationLoop.generate(
+                request, (piece, tokenId, step) -> pieces.add(piece));
+
+        assertThat(result.generatedTokens())
+                .isGreaterThan(0)
+                .isLessThanOrEqualTo(maxTokens);
+
+        assertThat(pieces).hasSameSizeAs(result.tokenIds());
+        assertThat(result.text()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("Prefix cache hit on repeated prompt")
+    void prefixCacheHitOnRepeat() {
+        SamplingParams params = SamplingParams.defaults().withMaxTokens(5);
+        List<ChatMessage> msgs = List.of(ChatMessage.user("Repeat this prompt"));
+
+        GenerationResult r1 = generationLoop.generate(
+                InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL),
+                TokenConsumer.discard());
+        GenerationResult r2 = generationLoop.generate(
+                InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL),
+                TokenConsumer.discard());
+
+        assertThat(r1.promptTokens()).isEqualTo(r2.promptTokens());
+        assertThat(r2.generatedTokens()).isGreaterThan(0);
+    }
+
+    @Test
+    @DisplayName("Concurrent requests on virtual threads all complete")
+    void concurrentRequestsOnVirtualThreads() throws InterruptedException {
+        int concurrency = 8;
+        var latch   = new java.util.concurrent.CountDownLatch(concurrency);
+        var results = new java.util.concurrent.CopyOnWriteArrayList<GenerationResult>();
+
+        for (int i = 0; i < concurrency; i++) {
+            final int idx = i;
+            Thread.ofVirtual().start(() -> {
+                try {
+                    InferenceRequest req = InferenceRequest.of(
+                            "tinyllama",
+                            List.of(ChatMessage.user("Request " + idx)),
+                            SamplingParams.defaults().withMaxTokens(3),
+                            RequestPriority.NORMAL
+                    );
+                    results.add(generationLoop.generate(req, TokenConsumer.discard()));
+                } finally {
+                    latch.countDown(); // always fires, even on exception
+                }
+            });
+        }
+
+        // Block until every virtual thread has signalled — no silent timeout slip-through
+        boolean allDone = latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(allDone)
+                .as("All %d virtual threads should finish within 30s", concurrency)
+                .isTrue();
+
+        assertThat(results).hasSize(concurrency);
+        assertThat(results).allSatisfy(r -> assertThat(r.generatedTokens()).isGreaterThan(0));
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static NodeDescriptor nodeDescriptor(String id, String host, int port, long vram) {
+        return new NodeDescriptor(id, host, port, vram, vram,
+                NodeStatus.IDLE, 1.0, Instant.now(), Instant.now());
+    }
+}

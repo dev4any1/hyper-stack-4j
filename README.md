@@ -19,7 +19,7 @@ Run large language models across a network of **affordable commodity GPUs** — 
    LEADER                  STANDBY
     │
     ├── Tokenizer (DJL SentencePiece)
-    ├── Scheduler (continuous batching, virtual threads)
+    ├── Scheduler (CompletableFuture, virtual threads)
     ├── Sampler (pure Java)
     ├── PrefixCache (Trie)
     └── InferencePipeline
@@ -40,14 +40,50 @@ Run large language models across a network of **affordable commodity GPUs** — 
 
 | Module | Responsibility |
 |--------|---------------|
-| `api` | OpenAPI 3.0 spec + generated JAX-RS interfaces + models. gRPC proto (inference.proto) for internal node communication |
-| `registry` | Model Registry + Shard Loader (Hazelcast IMap, GGUF via DJL, IMQ seed scoring) |
-| `coordinator` | Coordinator + Scheduler (continuous batching, Hazelcast CP leader election, Javalin REST) |
+| `api` | OpenAPI 3.0 spec + generated JAX-RS interfaces + models. gRPC proto (`inference.proto`) for internal node communication |
+| `registry` | Model Registry + Shard Planner (Hazelcast IMap, GGUF via DJL, IMQ seed scoring) |
+| `coordinator` | Coordinator + Scheduler (reactive `CompletableFuture`, Hazelcast CP leader election, Javalin REST) |
 | `node` | Inference Node — runs on each GPU machine (JCuda, JCublas, gRPC server) |
 | `kvcache` | KV Cache Manager — GPU tier (JCuda) + JVM heap tier (Caffeine). Prefix Trie for shared prompts |
 | `tokenizer` | Tokenizer (DJL SentencePiece, chat template formatter) |
 | `sampler` | Sampler — pure Java, zero deps (temperature, top-k, top-p, repetition penalty) |
 | `health` | Health Monitor (Hazelcast membership events, JCuda GPU probes, Resilience4j circuit breakers) |
+| `integration` | Multi-JVM cluster integration tests — forks real node processes, exercises full gRPC pipeline |
+
+## Scheduler — Reactive Design
+
+`RequestScheduler` dispatches every request on its own Java 21 Virtual Thread and exposes a fully reactive API via `CompletableFuture`.
+
+```java
+// Streaming — returns immediately, tokens delivered via TokenConsumer callback
+CompletableFuture<GenerationResult> future = scheduler.submit(request, consumer);
+
+// Blocking — caller waits only on its own future, never on other requests
+GenerationResult result = scheduler.submitAndWait(request);
+```
+
+**How `submitAndWait` works:**
+
+```
+1.  CompletableFuture<GenerationResult> created and registered in ConcurrentHashMap
+2.  request.offer()'d into PriorityBlockingQueue                    (HIGH priority first)
+3.  Virtual thread spawned — runs generate(), calls future.complete(result) on finish
+4.  Caller blocks on future.join() — wakes up exactly when its own request is done
+```
+
+N concurrent callers each block on **independent futures** — there is no shared lock or sequential bottleneck between requests. Exceptions surface via `future.completeExceptionally(e)` rather than being silently swallowed.
+
+When the queue is full, `submit()` throws `QueueFullException` (with a `retryAfterSeconds` hint), which the REST layer translates to **HTTP 503 + Retry-After**.
+
+## Shard Planner — Fair Layer Distribution
+
+`ShardPlanner` guarantees every eligible node receives **at least one layer**, regardless of VRAM headroom. When assigning layers to a node, the planner caps its allocation to leave at least one layer for each remaining node:
+
+```
+maxLayers = min(layersFit, remainingLayers − (remainingNodes − 1))
+```
+
+This prevents a large-VRAM node from consuming all remaining layers and leaving later nodes empty-handed.
 
 ## API
 
@@ -92,6 +128,43 @@ Prefix caching via a Trie structure — shared system prompts computed once and 
 mvn clean install -T 1C
 ```
 
+## Testing
+
+The project has two test layers:
+
+**Unit / module tests** — run on every build, no network:
+```bash
+mvn test
+```
+
+**Integration tests** — `maven-failsafe-plugin`, enabled with `mvn verify`:
+```bash
+# Full suite — forks 3 real JVM node processes, exercises live gRPC pipeline
+mvn verify -pl integration
+
+# In-process only (fast, zero network, uses LocalInferencePipeline)
+mvn verify -pl integration -Dit.test=InProcessClusterIT
+
+# Skip ITs entirely
+mvn verify -DskipITs
+```
+
+**Integration test architecture** (`integration` module):
+
+```
+ThreeNodeClusterIT
+  └── ClusterHarness.start()
+        ├── ProcessBuilder → NodeMain JVM #1  (port 19092, -Xmx4g -XX:+UseZGC)
+        ├── ProcessBuilder → NodeMain JVM #2  (port 19093, -Xmx4g -XX:+UseZGC)
+        └── ProcessBuilder → NodeMain JVM #3  (port 19094, -Xmx4g -XX:+UseZGC)
+  └── ProcessPipelineClient  (gRPC channels to all 3 nodes)
+  └── GenerationLoop + RequestScheduler  (coordinator JVM, -Xmx2g)
+```
+
+Memory budget for a 16 GB host: 3 × 4 GB nodes + 2 GB coordinator + 2 GB OS = 16 GB.
+
+**Recommended stub model for local testing:** `TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf` (~670 MB), split 8/7/7 layers across 3 nodes.
+
 ## Run
 
 ```bash
@@ -122,7 +195,7 @@ grpcurl -d '{"messages": [{"role": "user", "content": "Hello!"}]}' \
 ## Technology Stack
 
 | Concern | Technology |
-|---------|-----------|
+|---------|-----------| 
 | Language | Java 21 |
 | Build | Maven (multi-module) |
 | GPU compute | JCuda / JCublas 12.x |
@@ -131,7 +204,7 @@ grpcurl -d '{"messages": [{"role": "user", "content": "Hello!"}]}' \
 | Internal data plane | gRPC + Protocol Buffers |
 | REST API server | Javalin 6.x (lightweight, ~1MB, no framework) |
 | REST API spec | OpenAPI 3.0 — jaxrs-spec generator |
-| Concurrency | Java 21 Virtual Threads |
+| Concurrency | Java 21 Virtual Threads + `CompletableFuture` |
 | KV Cache L1 | JCuda CudaBuffer (GPU VRAM) |
 | KV Cache L2 | Caffeine (JVM heap, W-TinyLFU, bounded by Xmx) |
 | Circuit breaker | Resilience4j |
@@ -147,6 +220,8 @@ grpcurl -d '{"messages": [{"role": "user", "content": "Hello!"}]}' \
 - **No OHC / Ehcache / Chronicle Map** — all carry dead transitive dependencies (NetBeans repo). Caffeine is sufficient.
 - **Pipeline parallelism** over tensor parallelism — LAN-friendly, no InfiniBand required.
 - **Separate data plane (gRPC) from control plane (Hazelcast)** — mirrors Kafka/Kubernetes design.
+- **Reactive scheduler** — `submit()` returns `CompletableFuture<GenerationResult>`. N concurrent callers are fully independent; no sequential bottleneck between requests.
+- **Fair shard planning** — `ShardPlanner` caps each node's layer allocation to guarantee every eligible node participates, preventing VRAM-rich nodes from monopolising the pipeline.
 
 ## License
 

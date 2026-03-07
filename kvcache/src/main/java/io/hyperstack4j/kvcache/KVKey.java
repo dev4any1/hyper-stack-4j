@@ -1,7 +1,5 @@
 package io.hyperstack4j.kvcache;
 
-import java.util.Objects;
-
 /**
  * Composite cache key — requestId + layerIndex.
  *

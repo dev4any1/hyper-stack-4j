@@ -1,12 +1,12 @@
 package io.hyperstack4j.tokenizer;
 
-import ai.djl.sentencepiece.SpTokenizer;
-import ai.djl.sentencepiece.SpVocabulary;
-
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.logging.Logger;
+
+import ai.djl.sentencepiece.SpTokenizer;
+import ai.djl.sentencepiece.SpVocabulary;
 
 /**
  * Production tokenizer backed by DJL SentencePiece.

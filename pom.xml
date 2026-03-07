@@ -23,6 +23,7 @@
 		<module>tokenizer</module>
 		<module>sampler</module>
 		<module>health</module>
+		<module>integration</module>
 	</modules>
 
 	<properties>

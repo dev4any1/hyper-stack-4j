@@ -1,11 +1,11 @@
 package io.hyperstack4j.coordinator;
 
-import io.hyperstack4j.sampler.SamplingParams;
-import io.hyperstack4j.tokenizer.ChatMessage;
-
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+
+import io.hyperstack4j.sampler.SamplingParams;
+import io.hyperstack4j.tokenizer.ChatMessage;
 
 /**
  * Immutable value object representing a single inference request.

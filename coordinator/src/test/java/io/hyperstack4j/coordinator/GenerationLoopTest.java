@@ -1,5 +1,14 @@
 package io.hyperstack4j.coordinator;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
 import io.hyperstack4j.kvcache.CpuKVCache;
 import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
@@ -8,13 +17,6 @@ import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
 import io.hyperstack4j.tokenizer.StubTokenizer;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-
-import java.util.ArrayList;
-import java.util.List;
-
-import static org.assertj.core.api.Assertions.*;
 
 class GenerationLoopTest {
 
