@@ -16,6 +16,10 @@ import io.hyperstack4j.api.grpc.NodeStatusRequest;
 import io.hyperstack4j.api.grpc.NodeStatusResponse;
 import io.hyperstack4j.api.grpc.UnloadShardRequest;
 import io.hyperstack4j.api.grpc.UnloadShardResponse;
+import io.hyperstack4j.kvcache.CpuKVCache;
+import io.hyperstack4j.kvcache.GpuKVCache;
+import io.hyperstack4j.kvcache.KVCacheManager;
+import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ForwardResult;
 import io.hyperstack4j.node.ShardContext;
 import io.hyperstack4j.node.StubForwardPassHandler;
@@ -69,13 +73,21 @@ public final class EmbeddedNodeServer {
 
     private static final class NodeServiceImpl extends NodeServiceGrpc.NodeServiceImplBase {
 
+        private static final long NODE_VRAM_BUDGET = 512L * 1024 * 1024; // 512MB per node cache budget
+
         private final String                 nodeId;
         private final StubForwardPassHandler handler = new StubForwardPassHandler();
         private volatile ShardContext        context;
+        private volatile KVCacheManager      kvCache;  // layer-range-aware, set on loadShard
 
         NodeServiceImpl(String nodeId) {
             this.nodeId  = nodeId;
             this.context = buildDefaultContext();
+            // Default: unbounded — replaced with layer-scoped cache on loadShard
+            this.kvCache = new KVCacheManager(
+                    new GpuKVCache(NODE_VRAM_BUDGET),
+                    new CpuKVCache(256)
+            );
         }
 
         @Override
@@ -124,6 +136,15 @@ public final class EmbeddedNodeServer {
                     request.getHasEmbeddings(), request.getHasOutputProjection()
             );
             context = ShardContext.from(assignment, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
+
+            // Rebuild KVCacheManager scoped to this node's layer range
+            LayerRange range = LayerRange.of(request.getStartLayer(), request.getEndLayer());
+            kvCache = new KVCacheManager(
+                    new GpuKVCache(NODE_VRAM_BUDGET),
+                    new CpuKVCache(256),
+                    range
+            );
+            log.info("Node [" + nodeId + "] KVCache scoped to " + range);
 
             responseObserver.onNext(LoadShardResponse.newBuilder()
                     .setSuccess(true)

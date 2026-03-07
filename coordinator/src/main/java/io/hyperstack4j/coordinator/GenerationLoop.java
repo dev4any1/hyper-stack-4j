@@ -46,6 +46,150 @@ public final class GenerationLoop {
     }
 
     /**
+     * Run batched generation for N requests simultaneously.
+     *
+     * One forwardBatch() call per decode step serves all active requests —
+     * the GPU sees a full batch matrix instead of N scalar passes.
+     *
+     * Algorithm (static batching):
+     *   1. Encode all prompts and resolve prefix-cache startPos per request.
+     *   2. Each step: collect still-active requests, call forwardBatch() once,
+     *      sample independently per request, stream tokens, mark finished.
+     *   3. Loop until every request has hit EOS or its own maxTokens.
+     *
+     * Requests finish independently — a short maxTokens request exits early
+     * without stalling others. Streaming consumers receive tokens in real time,
+     * step by step, exactly as in single-request generation.
+     *
+     * @param entries one entry per request (request + consumer pair)
+     * @return one GenerationResult per entry, in the same order
+     */
+    @SuppressWarnings("unchecked")
+    public List<GenerationResult> generateBatch(List<BatchEntry> entries) {
+        if (entries.isEmpty()) return List.of();
+        if (entries.size() == 1) {
+            // Fast path — skip batch overhead for a single entry
+            BatchEntry e = entries.get(0);
+            return List.of(generate(e.request(), e.consumer()));
+        }
+
+        int n = entries.size();
+
+        // ── Per-request state ─────────────────────────────────────────────────
+        String[]     requestIds   = new String[n];
+        int[][]      allTokens    = new int[n][];
+        int[]        promptLens   = new int[n];   // length of original prompt (before generation)
+        int[]        startPos     = new int[n];   // KV cache offset per request
+        int[]        maxTokens    = new int[n];
+        List<Integer>[] generated = new List[n];
+        StringBuilder[] texts     = new StringBuilder[n];
+        GenerationResult.StopReason[] reasons = new GenerationResult.StopReason[n];
+        boolean[]    active       = new boolean[n];
+        Instant[]    starts       = new Instant[n];
+
+        // ── Step 1: encode all prompts ────────────────────────────────────────
+        for (int i = 0; i < n; i++) {
+            InferenceRequest req = entries.get(i).request();
+            requestIds[i] = req.requestId();
+            starts[i]     = Instant.now();
+
+            ChatTemplateFormatter formatter = ChatTemplateFormatter.forModelType(
+                    req.modelId().contains("llama3")  ? "llama3"  :
+                    req.modelId().contains("mistral") ? "mistral" :
+                    req.modelId().contains("gemma")   ? "gemma"   : "chatml");
+            String prompt    = formatter.format(req.messages());
+            int[]  promptIds = tokenizer.encode(prompt);
+
+            var prefixMatch = kvCache.findLongestPrefix(promptIds);
+            startPos[i]  = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
+
+            allTokens[i]  = promptIds.clone();
+            promptLens[i] = promptIds.length;
+            maxTokens[i]  = req.samplingParams().maxTokens();
+            generated[i]  = new ArrayList<>();
+            texts[i]      = new StringBuilder();
+            reasons[i]    = GenerationResult.StopReason.MAX_TOKENS;
+            active[i]     = true;
+        }
+
+        // ── Steps 2–N: batched decode loop ────────────────────────────────────
+        int globalMaxTokens = 0;
+        for (int mt : maxTokens) globalMaxTokens = Math.max(globalMaxTokens, mt);
+
+        for (int step = 0; step < globalMaxTokens; step++) {
+
+            // Collect active requests for this step
+            List<String>  batchIds  = new ArrayList<>(n);
+            List<int[]>   batchToks = new ArrayList<>(n);
+            List<Integer> batchPos  = new ArrayList<>(n);
+            List<Integer> batchIdx  = new ArrayList<>(n); // original index
+
+            for (int i = 0; i < n; i++) {
+                if (!active[i]) continue;
+                if (generated[i].size() >= maxTokens[i]) { active[i] = false; continue; }
+                batchIds.add(requestIds[i]);
+                batchToks.add(allTokens[i]);
+                batchPos.add(startPos[i] + generated[i].size());
+                batchIdx.add(i);
+            }
+
+            if (batchIds.isEmpty()) break;
+
+            // One forwardBatch call — the key GPU efficiency gain
+            float[][] logitsBatch = pipeline.forwardBatch(batchIds, batchToks, batchPos);
+
+            // Sample + stream for each result independently
+            for (int j = 0; j < batchIdx.size(); j++) {
+                int i   = batchIdx.get(j);
+                InferenceRequest req = entries.get(i).request();
+                float[] logits = logitsBatch[j];
+
+                int[] historyArr = generated[i].stream().mapToInt(Integer::intValue).toArray();
+                int nextToken    = sampler.sample(logits, req.samplingParams(), historyArr);
+
+                if (nextToken == tokenizer.eosTokenId()) {
+                    reasons[i] = GenerationResult.StopReason.EOS_TOKEN;
+                    active[i]  = false;
+                } else if (sampler.isStopToken(nextToken, req.samplingParams())) {
+                    reasons[i] = GenerationResult.StopReason.STOP_TOKEN;
+                    active[i]  = false;
+                } else {
+                    String piece = tokenizer.decodeToken(nextToken);
+                    entries.get(i).consumer().onToken(piece, nextToken, generated[i].size());
+                    texts[i].append(piece);
+                    generated[i].add(nextToken);
+                    allTokens[i] = appendToken(allTokens[i], nextToken);
+                }
+            }
+        }
+
+        // ── Build results + cleanup ───────────────────────────────────────────
+        List<GenerationResult> results = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+
+            // Cache prompt prefix for future requests
+            if (startPos[i] == 0 && promptLens[i] > 0) {
+                int[] promptOnly = new int[promptLens[i]];
+                System.arraycopy(allTokens[i], 0, promptOnly, 0, promptLens[i]);
+                kvCache.cachePrefix(promptOnly, promptOnly.length, requestIds[i] + ":prefix");
+            }
+            kvCache.evict(requestIds[i]);
+
+            results.add(new GenerationResult(
+                    requestIds[i],
+                    texts[i].toString(),
+                    generated[i],
+                    promptLens[i],
+                    generated[i].size(),
+                    reasons[i],
+                    Instant.now(),
+                    Duration.between(starts[i], Instant.now())
+            ));
+        }
+        return results;
+    }
+
+    /**
      * Run generation for a single request.
      *
      * @param request  the inference request

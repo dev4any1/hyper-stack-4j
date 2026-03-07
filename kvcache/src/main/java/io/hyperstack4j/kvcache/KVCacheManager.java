@@ -11,6 +11,14 @@ import java.util.logging.Logger;
  * Eviction:     per-tier (Caffeine on CPU, LRU slab on GPU).
  * Cleanup:      evict(requestId) removes from both tiers on request completion.
  *
+ * Distributed KV:
+ *   Each node creates its own KVCacheManager with a LayerRange matching its
+ *   ShardAssignment. put() enforces the range — writing KV for a layer this
+ *   node does not own is a routing bug and throws IllegalArgumentException.
+ *
+ *   The coordinator creates a KVCacheManager with LayerRange.all() (the default)
+ *   for backward compatibility and prefix cache operations.
+ *
  * Thread-safe — each tier implementation is independently thread-safe.
  */
 public final class KVCacheManager {
@@ -20,19 +28,45 @@ public final class KVCacheManager {
     private final GpuKVCache    gpuCache;
     private final CpuKVCache    cpuCache;
     private final PrefixCache   prefixCache;
+    private final LayerRange    layerRange;
 
+    /**
+     * Backward-compatible constructor — no layer restriction (LayerRange.all()).
+     * Used by coordinator and single-node setups.
+     */
     public KVCacheManager(GpuKVCache gpuCache, CpuKVCache cpuCache) {
-        if (gpuCache == null) throw new IllegalArgumentException("gpuCache must not be null");
-        if (cpuCache == null) throw new IllegalArgumentException("cpuCache must not be null");
+        this(gpuCache, cpuCache, LayerRange.all());
+    }
+
+    /**
+     * Layer-range-aware constructor — for distributed nodes.
+     * put() will reject any block whose layerIndex is outside this range.
+     *
+     * @param layerRange the layer range this node is responsible for
+     */
+    public KVCacheManager(GpuKVCache gpuCache, CpuKVCache cpuCache, LayerRange layerRange) {
+        if (gpuCache == null)    throw new IllegalArgumentException("gpuCache must not be null");
+        if (cpuCache == null)    throw new IllegalArgumentException("cpuCache must not be null");
+        if (layerRange == null)  throw new IllegalArgumentException("layerRange must not be null");
         this.gpuCache    = gpuCache;
         this.cpuCache    = cpuCache;
         this.prefixCache = new PrefixCache();
+        this.layerRange  = layerRange;
     }
 
     /**
      * Store a KV block. Written to GPU tier first, then CPU tier.
+     *
+     * @throws IllegalArgumentException if key.layerIndex() is outside this manager's LayerRange.
+     *         Wrong-range puts are routing bugs — fail fast.
      */
     public void put(KVKey key, KVBlock block) {
+        if (!layerRange.contains(key.layerIndex())) {
+            throw new IllegalArgumentException(String.format(
+                    "KVCacheManager owns %s but got put for layer %d (key=%s). " +
+                    "This is a shard routing bug.",
+                    layerRange, key.layerIndex(), key));
+        }
         gpuCache.put(key, block);
         cpuCache.put(key, block);
     }
@@ -83,11 +117,17 @@ public final class KVCacheManager {
         return prefixCache.findLongestPrefix(tokens);
     }
 
-    // ── Stats ─────────────────────────────────────────────────────────────────
+    // ── Stats + metadata ──────────────────────────────────────────────────────
 
     public long gpuBlockCount()       { return gpuCache.size(); }
     public long cpuBlockCount()       { return cpuCache.size(); }
     public long gpuBytesUsed()        { return gpuCache.estimatedSizeBytes(); }
     public long cpuBytesUsed()        { return cpuCache.estimatedSizeBytes(); }
     public long gpuVramBudgetBytes()  { return gpuCache.vramBudgetBytes(); }
+
+    /** The layer range this manager is responsible for. */
+    public LayerRange layerRange()    { return layerRange; }
+
+    /** Whether this manager owns the given layer index. */
+    public boolean ownsLayer(int layerIndex) { return layerRange.contains(layerIndex); }
 }

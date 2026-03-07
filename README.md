@@ -87,7 +87,7 @@ This prevents a large-VRAM node from consuming all remaining layers and leaving 
 
 ## API
 
-The coordinator exposes a REST API (OpenAPI 3.0 spec at `api/src/main/resources/openapi.yaml`):
+The coordinator exposes a REST API (OpenAPI 3.0 spec at `api/src/main/resources/openapi.yaml`), implemented by `InferenceApiServer` (Javalin 6):
 
 ```
 POST   /v1/inference          — blocking inference
@@ -100,6 +100,38 @@ GET    /v1/cluster/health     — cluster health overview
 GET    /v1/cluster/nodes      — all node statuses
 GET    /v1/cluster/shardmap   — current layer assignments
 ```
+
+**Streaming pipeline — how it works end to end:**
+
+```
+Client → POST /v1/inference/stream
+         ↓
+InferenceApiServer parses body, sets SSE headers
+         ↓
+scheduler.submit(request, SseTokenConsumer)  ← returns CompletableFuture
+         ↓
+Generation virtual thread: GenerationLoop.generate()
+   each token → TokenConsumer.onToken(piece, tokenId, position)
+              → SseTokenConsumer writes:  data: {"token":"Hello","tokenId":9906,"isComplete":false}
+              → flushed to HTTP response immediately
+         ↓
+Generation complete → consumer.sendComplete("stop")
+                    → data: {"token":"","tokenId":0,"isComplete":true,"finishReason":"stop"}
+         ↓
+Client reads the SSE stream token by token
+```
+
+`SseTokenConsumer` is decoupled from Javalin via a `SseEmitter` functional interface — in production it wraps `writer::write`; in tests it wraps `list::add`.
+
+**Error codes:**
+
+| Status | Meaning |
+|--------|---------|
+| 400 | Missing or empty messages |
+| 404 | Model not found |
+| 429 | Scheduler queue full (`QueueFullException`) |
+| 503 | Model not loaded / cluster unavailable |
+| 500 | Unexpected inference error |
 
 Internal node-to-node communication uses gRPC (`InferenceService`, `NodeService`, `RegistryService`).
 

@@ -312,7 +312,7 @@ Example metrics endpoint:
   cluster has sufficient total VRAM.
 
 8.2  COORDINATOR + SCHEDULER
-  Batching                Dynamic continuous batching
+  Batching                Static micro-batching (same-step, configurable)
   Preemption              Configurable — ABORT strategy first
   Coordinator count       2 (leader + standby)
   Leader election         Hazelcast CP FencedLock
@@ -323,14 +323,50 @@ Example metrics endpoint:
   Priority queuing        PriorityBlockingQueue — HIGH=3, NORMAL=1, LOW=1
   Concurrency             Java 21 Virtual Threads + CompletableFuture
 
-  Reactive scheduler (RequestScheduler):
+  BatchConfig:
+  ----------------------------------------
+  defaults()   maxBatchSize=8,  batchWindowMs=50  (production)
+  disabled()   maxBatchSize=1,  batchWindowMs=0   (original per-request dispatch)
+  of(n, ms)    custom
+
+  When disabled: every request dispatched immediately on its own virtual thread
+  — identical to the original RequestScheduler.
+
+  When enabled: a single background virtual thread (batch-collector) runs:
+    1. Block on queue.poll(batchWindowMs) — wait for first request
+    2. Drain up to (maxBatchSize - 1) more with non-blocking poll()
+    3. Dispatch the batch on a new virtual thread (batch-gen-*)
+    4. Each GenerationResult completes the corresponding CompletableFuture
+    5. Immediately resume collecting the next batch
+
+  The batch dispatch thread runs concurrently with collection — the collector
+  never blocks on GPU work. Multiple batches can be in-flight simultaneously.
+
+  InferencePipeline.forwardBatch() (new default method):
+  ----------------------------------------
+  Default: calls forward() N times serially — all existing impls work unchanged.
+  Override in GpuForwardPassHandler: one CUDA batched matmul for the whole batch.
+  The GPU utilization gain comes entirely from this override.
+
+  GenerationLoop.generateBatch(List<BatchEntry>) (new method):
+  ----------------------------------------
+  1. Encode all N prompts, resolve prefix-cache startPos per request
+  2. Per decode step: collect active requests, call forwardBatch() once
+  3. Sample, stream, and mark-done per request independently
+  4. Loop until all requests have hit EOS or their own maxTokens
+  5. Cache prefixes + evict KV blocks per request
+  6. Return List<GenerationResult> in entry order
+
+  Key property: a request that hits EOS at step 3 exits without blocking
+  the remaining requests from continuing to step 4, 5, etc.
+
+  Reactive scheduler (RequestScheduler — batching disabled):
   ----------------------------------------
   Every request — streaming or blocking — is dispatched on its own Virtual
   Thread. The public API is fully reactive via CompletableFuture.
 
   submit(request, consumer) -> CompletableFuture<GenerationResult>
-    1. CompletableFuture<GenerationResult> created and stored in
-       ConcurrentHashMap<requestId, future> BEFORE queue.offer()
+    1. CompletableFuture<GenerationResult> stored in ConcurrentHashMap BEFORE queue.offer()
     2. request.offer()'d into PriorityBlockingQueue (HIGH priority first)
     3. Virtual thread spawned — calls generationLoop.generate()
     4. On success: future.complete(result)
@@ -619,9 +655,14 @@ sampling:
     [x] integration ClusterHarness, EmbeddedNodeServer, NodeMain,
                     ProcessPipelineClient, InProcessClusterIT, ThreeNodeClusterIT
 
-  Phase 3 — Orchestration  [PENDING — real impl]
-    [ ] node        GpuForwardPassHandler (JCuda/JCublas)
-    [ ] coordinator Javalin REST server wired to GenerationLoop
+  Phase 3 — Orchestration  [PARTIAL — real impl]
+    [x] coordinator InferenceApiServer (Javalin REST, blocking + SSE streaming)
+                    SseTokenConsumer (TokenConsumer → SSE events)
+    [x] coordinator BatchConfig, BatchEntry
+                    InferencePipeline.forwardBatch() default method (override seam)
+                    GenerationLoop.generateBatch() (static batching loop)
+                    RequestScheduler with 3-arg BatchConfig ctor + batch-collector + shutdown()
+    [ ] node        GpuForwardPassHandler (JCuda/JCublas) — forwardBatch() real override
     [ ] coordinator Hazelcast leader election
 
   Phase 4 — Operations  [PENDING]

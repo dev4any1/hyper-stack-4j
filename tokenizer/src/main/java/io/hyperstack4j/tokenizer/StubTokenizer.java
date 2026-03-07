@@ -1,9 +1,10 @@
 package io.hyperstack4j.tokenizer;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Lightweight test-double tokenizer for unit and integration testing.
@@ -21,9 +22,9 @@ public final class StubTokenizer implements Tokenizer {
     private static final int EOS = 2;
     private static final int PAD = 0;
 
-    private final Map<String, Integer> vocab   = new HashMap<>();
-    private final Map<Integer, String> reverse = new HashMap<>();
-    private int nextId = 10; // start above special tokens
+    private final Map<String, Integer> vocab   = new ConcurrentHashMap<>();
+    private final Map<Integer, String> reverse = new ConcurrentHashMap<>();
+    private final AtomicInteger        nextId  = new AtomicInteger(10);
 
     public StubTokenizer() {
         // pre-register special tokens
@@ -39,7 +40,7 @@ public final class StubTokenizer implements Tokenizer {
 
     private int getOrCreate(String token) {
         return vocab.computeIfAbsent(token, t -> {
-            int id = nextId++;
+            int id = nextId.getAndIncrement();
             reverse.put(id, t);
             return id;
         });

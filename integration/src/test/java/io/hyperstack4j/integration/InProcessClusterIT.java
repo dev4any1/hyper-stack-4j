@@ -18,6 +18,9 @@ import io.hyperstack4j.coordinator.TokenConsumer;
 import io.hyperstack4j.kvcache.CpuKVCache;
 import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
+import io.hyperstack4j.kvcache.KVKey;
+import io.hyperstack4j.kvcache.KVBlock;
+import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.LocalInferencePipeline;
 import io.hyperstack4j.node.StubForwardPassHandler;
@@ -176,6 +179,53 @@ class InProcessClusterIT {
 
         assertThat(results).hasSize(concurrency);
         assertThat(results).allSatisfy(r -> assertThat(r.generatedTokens()).isGreaterThan(0));
+    }
+
+    @Test
+    @DisplayName("Per-node KVCacheManagers are scoped to their layer range and isolated from each other")
+    void per_node_kv_caches_are_layer_scoped_and_isolated() {
+        // Mirrors the 3-node shard layout used in setUp():
+        //   Node 1 — layers  0..7   (ShardAssignment startLayer=0,  endLayer=8)
+        //   Node 2 — layers  8..14  (ShardAssignment startLayer=8,  endLayer=15)
+        //   Node 3 — layers 15..21  (ShardAssignment startLayer=15, endLayer=22)
+        KVCacheManager node1Cache = new KVCacheManager(
+                new GpuKVCache(64L * 1024 * 1024), new CpuKVCache(256),
+                LayerRange.of(0, 8));
+        KVCacheManager node2Cache = new KVCacheManager(
+                new GpuKVCache(64L * 1024 * 1024), new CpuKVCache(256),
+                LayerRange.of(8, 15));
+        KVCacheManager node3Cache = new KVCacheManager(
+                new GpuKVCache(64L * 1024 * 1024), new CpuKVCache(256),
+                LayerRange.of(15, 22));
+
+        // Each node owns only its layers
+        assertThat(node1Cache.ownsLayer(0)).isTrue();
+        assertThat(node1Cache.ownsLayer(7)).isTrue();
+        assertThat(node1Cache.ownsLayer(8)).isFalse();
+
+        assertThat(node2Cache.ownsLayer(8)).isTrue();
+        assertThat(node2Cache.ownsLayer(14)).isTrue();
+        assertThat(node2Cache.ownsLayer(0)).isFalse();
+
+        assertThat(node3Cache.ownsLayer(15)).isTrue();
+        assertThat(node3Cache.ownsLayer(21)).isTrue();
+        assertThat(node3Cache.ownsLayer(14)).isFalse();
+
+        // Blocks stored on node1 are not visible on node2 or node3
+        var key = new KVKey("req-kv-test", 3);
+        var block = new io.hyperstack4j.kvcache.KVBlock(
+                key, new byte[512], 10, 3,
+                java.time.Instant.now(), java.time.Instant.now());
+        node1Cache.put(key, block);
+
+        assertThat(node1Cache.get(key)).isPresent();
+        assertThat(node2Cache.get(key)).isEmpty();
+        assertThat(node3Cache.get(key)).isEmpty();
+
+        // Evict on node1 doesn't affect other nodes (would be no-op since they don't have it,
+        // but verifies evict() is local)
+        node1Cache.evict("req-kv-test");
+        assertThat(node1Cache.get(key)).isEmpty();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
