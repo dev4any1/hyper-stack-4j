@@ -397,11 +397,59 @@ Example metrics endpoint:
 8.4  HEALTH MONITOR
   Node liveness           Hazelcast memberRemoved event (automatic)
   GPU health probe        JCuda every 5s, published to Hazelcast IMap
-  Circuit breaker         Resilience4j per node, wraps all gRPC calls
-  VRAM warning            90% (configurable) -> aggressive eviction
-  VRAM critical           98% (configurable) -> circuit open -> reshard
+  Circuit breaker         per node, wraps all forward pass calls
+  VRAM warning            90% (configurable) → logged, future: reduce batch size
+  VRAM critical           98% (configurable) → circuit open → reshard
   Metrics                 Micrometer + Prometheus via JDK HttpServer
   Admin endpoints         None (Spring removed) — Prometheus scrape only
+
+8.4a FAULT TOLERANCE
+  ─────────────────────────────────────────────────────────────────────────────
+  Three new classes in coordinator handle the complete failure cascade:
+
+  RetryPolicy (record):
+    none()       — 1 attempt, fail immediately
+    once()       — 2 attempts, 50ms backoff (default)
+    aggressive() — 3 attempts, 100ms backoff (HIGH priority requests)
+
+  FaultTolerantPipeline (implements InferencePipeline):
+    Wraps a List<NodePipeline> — each NodePipeline is (nodeId, pipeline, CircuitBreaker).
+    forward() algorithm:
+      For each node (in order):
+        if !circuit.isCallPermitted()  → skip (OPEN circuit)
+        try forward pass
+          success → circuit.recordSuccess(), return result
+          failure → circuit.recordFailure(), sleep backoff, try next node
+        if tried >= maxAttempts → stop
+      if tried == 0    → throw CIRCUIT_OPEN (all nodes blocked)
+      if all failed    → throw RETRIES_EXHAUSTED (tried N, all threw)
+    forwardBatch() same policy — routes entire batch to one node for KV cache coherence.
+    Health hooks (called by HealthReactor, no-op if nodeId unknown):
+      onVramCritical(nodeId)  → circuit.forceOpen()
+      onNodeStale(nodeId)     → circuit.forceOpen()
+      onNodeRecovered(nodeId) → circuit.reset()
+
+  HealthReactor:
+    owns a HealthEvaluator + FaultTolerantPipeline + (optional) RequestScheduler
+    onHealthProbe(NodeHealth) → evaluator.evaluate() → for each HealthEvent:
+      VRAM_CRITICAL  → pipeline.onVramCritical(nodeId)
+      NODE_STALE     → pipeline.onNodeStale(nodeId)
+      NODE_RECOVERED → pipeline.onNodeRecovered(nodeId)
+      VRAM_WARNING   → log only (eviction handled by KVCacheManager)
+    If pipeline.isFullyUnavailable() after any OPEN event → scheduler.shutdown()
+    onNodeRemoved(nodeId) → pipeline.onNodeStale(nodeId) + evaluator.forget(nodeId)
+
+  Wiring (production):
+    nodeHealthMap.addEntryListener(event -> reactor.onHealthProbe(event.getValue()), true);
+    GenerationLoop uses FaultTolerantPipeline as its InferencePipeline —
+    all forward passes go through the circuit-breaking layer transparently.
+
+  PipelineUnavailableException:
+    reason: CIRCUIT_OPEN | RETRIES_EXHAUSTED
+    attemptsMade: int
+    isRetryable(): true iff RETRIES_EXHAUSTED
+    REST layer → HTTP 503 + Retry-After header
+  ─────────────────────────────────────────────────────────────────────────────
 
 8.5  TOKENIZER
   Library                 DJL SpTokenizer (SentencePiece JNI wrapper)
@@ -662,6 +710,9 @@ sampling:
                     InferencePipeline.forwardBatch() default method (override seam)
                     GenerationLoop.generateBatch() (static batching loop)
                     RequestScheduler with 3-arg BatchConfig ctor + batch-collector + shutdown()
+    [x] coordinator RetryPolicy, PipelineUnavailableException
+                    FaultTolerantPipeline (circuit-breaking + retry across nodes)
+                    HealthReactor (HealthEvent → circuit + scheduler lifecycle)
     [ ] node        GpuForwardPassHandler (JCuda/JCublas) — forwardBatch() real override
     [ ] coordinator Hazelcast leader election
 
