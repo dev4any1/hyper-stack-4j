@@ -81,22 +81,43 @@ service NodeService {
     rpc GetNodeStatus(NodeStatusRequest) returns (NodeStatusResponse);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVATION DTYPE — wire encoding for activation tensors between nodes
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Compression format for the activation bytes in ForwardRequest / ForwardResponse.
+//
+// Choosing a smaller dtype reduces network transfer at the cost of precision loss.
+// The tradeoff is acceptable: quantisation error is far smaller than sampling noise.
+//
+// Ratios vs FLOAT32 at hidden_dim=8192 (70B model):
+//   FLOAT32 → 64 MB / hop  (~51 ms on 10GbE)
+//   FLOAT16 → 32 MB / hop  (~26 ms on 10GbE)  — 2× saving, ~0.1% relative error
+//   INT8    → 16 MB / hop  (~13 ms on 10GbE)  — 4× saving, ~1%  relative error
+enum ActivationDtype {
+    FLOAT32 = 0;  // default — raw IEEE 754 single-precision, 4 bytes/element
+    FLOAT16 = 1;  // IEEE 754 half-precision, 2 bytes/element
+    INT8    = 2;  // symmetric quantisation: [scale:float32 (4B)][values:byte × N]
+}
+
 message ForwardRequest {
-    string request_id   = 1;
-    string model_id     = 2;
-    int32  start_layer  = 3;  // inclusive
-    int32  end_layer    = 4;  // exclusive
-    bytes  activation   = 5;  // serialized float[] — FlatBuffers encoded
-    int32  sequence_pos = 6;  // current position in sequence
-    bool   use_kv_cache = 7;  // whether to read/write KV cache for this pass
-    int32  batch_size   = 8;  // number of sequences in this batch
+    string         request_id   = 1;
+    string         model_id     = 2;
+    int32          start_layer  = 3;  // inclusive
+    int32          end_layer    = 4;  // exclusive
+    bytes          activation   = 5;  // encoded per dtype field — see ActivationCodec
+    int32          sequence_pos = 6;  // current position in sequence
+    bool           use_kv_cache = 7;  // whether to read/write KV cache for this pass
+    int32          batch_size   = 8;  // number of sequences in this batch
+    ActivationDtype dtype       = 9;  // encoding of the activation bytes field
 }
 
 message ForwardResponse {
-    string request_id   = 1;
-    bytes  activation   = 2;  // serialized float[] — FlatBuffers encoded
-    bool   is_last_node = 3;  // if true, activation contains final logits
-    string error        = 4;  // non-empty if forward pass failed
+    string         request_id   = 1;
+    bytes          activation   = 2;  // encoded per dtype field — see ActivationCodec
+    bool           is_last_node = 3;  // if true, activation contains final logits
+    string         error        = 4;  // non-empty if forward pass failed
+    ActivationDtype dtype       = 5;  // encoding of the activation bytes field
 }
 
 message LoadShardRequest {

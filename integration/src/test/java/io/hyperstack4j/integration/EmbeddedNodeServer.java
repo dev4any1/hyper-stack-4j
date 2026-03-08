@@ -1,13 +1,13 @@
 package io.hyperstack4j.integration;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import io.grpc.stub.StreamObserver;
+import io.hyperstack4j.api.grpc.ActivationDtype;
 import io.hyperstack4j.api.grpc.ForwardResponse;
 import io.hyperstack4j.api.grpc.LoadShardRequest;
 import io.hyperstack4j.api.grpc.LoadShardResponse;
@@ -20,16 +20,22 @@ import io.hyperstack4j.kvcache.CpuKVCache;
 import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.kvcache.LayerRange;
+import io.hyperstack4j.node.ActivationCodec;
 import io.hyperstack4j.node.ForwardResult;
 import io.hyperstack4j.node.ShardContext;
 import io.hyperstack4j.node.StubForwardPassHandler;
 import io.hyperstack4j.registry.ShardAssignment;
 
 /**
- * Minimal gRPC NodeService implementation backed by StubForwardPassHandler.
+ * Minimal gRPC NodeService backed by StubForwardPassHandler.
  *
  * Used by ThreeNodeClusterIT — each node JVM runs one of these.
  * No GPU, no real weights — deterministic stub responses only.
+ *
+ * Activation compression:
+ *   Each ForwardRequest carries a dtype field that tells this node how to decode
+ *   the incoming activation bytes. The response activation (for intermediate nodes)
+ *   is compressed using the same dtype. Final-node logits are always FLOAT32.
  */
 public final class EmbeddedNodeServer {
 
@@ -73,17 +79,16 @@ public final class EmbeddedNodeServer {
 
     private static final class NodeServiceImpl extends NodeServiceGrpc.NodeServiceImplBase {
 
-        private static final long NODE_VRAM_BUDGET = 512L * 1024 * 1024; // 512MB per node cache budget
+        private static final long NODE_VRAM_BUDGET = 512L * 1024 * 1024;
 
         private final String                 nodeId;
         private final StubForwardPassHandler handler = new StubForwardPassHandler();
         private volatile ShardContext        context;
-        private volatile KVCacheManager      kvCache;  // layer-range-aware, set on loadShard
+        private volatile KVCacheManager      kvCache;
 
         NodeServiceImpl(String nodeId) {
             this.nodeId  = nodeId;
             this.context = buildDefaultContext();
-            // Default: unbounded — replaced with layer-scoped cache on loadShard
             this.kvCache = new KVCacheManager(
                     new GpuKVCache(NODE_VRAM_BUDGET),
                     new CpuKVCache(256)
@@ -92,12 +97,15 @@ public final class EmbeddedNodeServer {
 
         @Override
         public void forwardPass(
-                io.hyperstack4j.api.grpc.ForwardRequest request,   // fully qualified — avoids clash with node.ForwardRequest
+                io.hyperstack4j.api.grpc.ForwardRequest request,
                 StreamObserver<ForwardResponse> responseObserver) {
             try {
-                float[] inputActivations = bytesToFloats(request.getActivation().toByteArray());
+                // ── Decode incoming activation ──────────────────────────────
+                io.hyperstack4j.node.ActivationDtype inDtype = fromProto(request.getDtype());
+                byte[] rawBytes = request.getActivation().toByteArray();
+                float[] inputActivations = ActivationCodec.decode(rawBytes, inDtype);
 
-                // Use node.ForwardRequest (the record, not the proto message)
+                // Build the domain-model ForwardRequest (not the proto one)
                 io.hyperstack4j.node.ForwardRequest nodeReq =
                         inputActivations.length == 0
                                 ? io.hyperstack4j.node.ForwardRequest.withTokens(
@@ -107,12 +115,21 @@ public final class EmbeddedNodeServer {
 
                 ForwardResult result = handler.forward(nodeReq, context);
 
+                // ── Encode outgoing activation ──────────────────────────────
                 float[] outputFloats = result.isFinalNode() ? result.logits() : result.activations();
+
+                // Final node always returns plain FLOAT32 logits (no loss allowed on vocab)
+                io.hyperstack4j.node.ActivationDtype outDtype = result.isFinalNode()
+                        ? io.hyperstack4j.node.ActivationDtype.FLOAT32
+                        : inDtype;
+
+                byte[] encodedOutput = ActivationCodec.encode(outputFloats, outDtype);
 
                 ForwardResponse response = ForwardResponse.newBuilder()
                         .setRequestId(request.getRequestId())
-                        .setActivation(com.google.protobuf.ByteString.copyFrom(floatsToBytes(outputFloats)))
+                        .setActivation(com.google.protobuf.ByteString.copyFrom(encodedOutput))
                         .setIsLastNode(result.isFinalNode())
+                        .setDtype(toProto(outDtype))
                         .build();
 
                 responseObserver.onNext(response);
@@ -137,7 +154,6 @@ public final class EmbeddedNodeServer {
             );
             context = ShardContext.from(assignment, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
 
-            // Rebuild KVCacheManager scoped to this node's layer range
             LayerRange range = LayerRange.of(request.getStartLayer(), request.getEndLayer());
             kvCache = new KVCacheManager(
                     new GpuKVCache(NODE_VRAM_BUDGET),
@@ -185,18 +201,20 @@ public final class EmbeddedNodeServer {
             return ShardContext.from(full, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
         }
 
-        private static float[] bytesToFloats(byte[] bytes) {
-            if (bytes == null || bytes.length == 0) return new float[0];
-            ByteBuffer buf = ByteBuffer.wrap(bytes);
-            float[] floats = new float[bytes.length / 4];
-            for (int i = 0; i < floats.length; i++) floats[i] = buf.getFloat();
-            return floats;
+        private static io.hyperstack4j.node.ActivationDtype fromProto(ActivationDtype proto) {
+            return switch (proto) {
+                case FLOAT16 -> io.hyperstack4j.node.ActivationDtype.FLOAT16;
+                case INT8    -> io.hyperstack4j.node.ActivationDtype.INT8;
+                default      -> io.hyperstack4j.node.ActivationDtype.FLOAT32;
+            };
         }
 
-        private static byte[] floatsToBytes(float[] floats) {
-            ByteBuffer buf = ByteBuffer.allocate(floats.length * 4);
-            for (float f : floats) buf.putFloat(f);
-            return buf.array();
+        private static ActivationDtype toProto(io.hyperstack4j.node.ActivationDtype dtype) {
+            return switch (dtype) {
+                case FLOAT32 -> ActivationDtype.FLOAT32;
+                case FLOAT16 -> ActivationDtype.FLOAT16;
+                case INT8    -> ActivationDtype.INT8;
+            };
         }
     }
 }

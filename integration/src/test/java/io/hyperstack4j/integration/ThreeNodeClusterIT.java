@@ -189,4 +189,109 @@ class ThreeNodeClusterIT {
         GenerationResult result = scheduler.submitAndWait(high);
         assertThat(result.generatedTokens()).isGreaterThan(0);
     }
+
+    // ── Activation compression tests ──────────────────────────────────────────
+
+    @Test
+    @Order(7)
+    @DisplayName("FLOAT16 compressed pipeline produces same winner token as FLOAT32")
+    void float16PipelineProducesSameWinnerToken() throws InterruptedException {
+        ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(
+                harness.nodeAddresses(),
+                EmbeddedNodeServer.VOCAB_SIZE,
+                io.hyperstack4j.node.ActivationDtype.FLOAT16
+        );
+        try {
+            float[] logitsF32 = pipeline.forward("cmp-f32", new int[]{1, 2, 3}, 0);
+            float[] logitsF16 = f16Pipeline.forward("cmp-f16", new int[]{1, 2, 3}, 0);
+
+            assertThat(logitsF16).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
+
+            int winnerF32 = argmax(logitsF32);
+            int winnerF16 = argmax(logitsF16);
+            assertThat(winnerF16)
+                    .as("FLOAT16 pipeline should pick the same winner token as FLOAT32")
+                    .isEqualTo(winnerF32);
+
+            System.out.printf("FLOAT16 pipeline: winner=%d (same as FLOAT32=%d)%n",
+                    winnerF16, winnerF32);
+        } finally {
+            f16Pipeline.shutdown();
+        }
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("INT8 compressed pipeline produces same winner token as FLOAT32")
+    void int8PipelineProducesSameWinnerToken() throws InterruptedException {
+        ProcessPipelineClient i8Pipeline = new ProcessPipelineClient(
+                harness.nodeAddresses(),
+                EmbeddedNodeServer.VOCAB_SIZE,
+                io.hyperstack4j.node.ActivationDtype.INT8
+        );
+        try {
+            float[] logitsF32 = pipeline.forward("cmp-f32-2", new int[]{1, 2, 3}, 0);
+            float[] logitsI8  = i8Pipeline.forward("cmp-i8", new int[]{1, 2, 3}, 0);
+
+            assertThat(logitsI8).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
+
+            int winnerF32 = argmax(logitsF32);
+            int winnerI8  = argmax(logitsI8);
+            assertThat(winnerI8)
+                    .as("INT8 pipeline should pick the same winner token as FLOAT32")
+                    .isEqualTo(winnerF32);
+
+            System.out.printf("INT8 pipeline: winner=%d (same as FLOAT32=%d)%n",
+                    winnerI8, winnerF32);
+        } finally {
+            i8Pipeline.shutdown();
+        }
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("GenerationLoop produces tokens via FLOAT16 compressed pipeline")
+    void generationLoopWithFloat16Compression() throws InterruptedException {
+        ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(
+                harness.nodeAddresses(),
+                EmbeddedNodeServer.VOCAB_SIZE,
+                io.hyperstack4j.node.ActivationDtype.FLOAT16
+        );
+        try {
+            GenerationLoop f16Loop = new GenerationLoop(
+                    new StubTokenizer(),
+                    Sampler.create(),
+                    f16Pipeline,
+                    new KVCacheManager(
+                            new GpuKVCache(512L * 1024 * 1024),
+                            new CpuKVCache(256)
+                    )
+            );
+
+            InferenceRequest req = InferenceRequest.of(
+                    "tinyllama",
+                    List.of(ChatMessage.user("Hello compressed world")),
+                    SamplingParams.defaults().withMaxTokens(5),
+                    RequestPriority.NORMAL
+            );
+
+            GenerationResult result = f16Loop.generate(req, TokenConsumer.discard());
+
+            assertThat(result.generatedTokens()).isGreaterThan(0);
+            System.out.printf("FLOAT16 GenerationLoop: tokens=%d latency=%d ms%n",
+                    result.generatedTokens(), result.latency().toMillis());
+        } finally {
+            f16Pipeline.shutdown();
+        }
+    }
+
+    // ── Helper ────────────────────────────────────────────────────────────────
+
+    private static int argmax(float[] logits) {
+        int best = 0;
+        for (int i = 1; i < logits.length; i++) {
+            if (logits[i] > logits[best]) best = i;
+        }
+        return best;
+    }
 }

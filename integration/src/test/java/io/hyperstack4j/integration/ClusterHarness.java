@@ -112,6 +112,17 @@ public final class ClusterHarness implements AutoCloseable {
     }
 
     /**
+     * Returns the node addresses in pipeline order.
+     * Use this to create additional ProcessPipelineClient instances (e.g. with a
+     * different ActivationDtype) pointing at the same running nodes.
+     */
+    public List<ProcessPipelineClient.NodeAddress> nodeAddresses() {
+        return specs.stream()
+                .map(s -> new ProcessPipelineClient.NodeAddress(s.host(), s.port()))
+                .toList();
+    }
+
+    /**
      * Shut down all node processes and close gRPC channels.
      */
     public void stop() throws InterruptedException {
@@ -138,20 +149,32 @@ public final class ClusterHarness implements AutoCloseable {
                 .orElse(Path.of(System.getProperty("java.home"), "bin", "java").toString());
 
         String classpath = System.getProperty("java.class.path");
+        boolean verbose  = "true".equalsIgnoreCase(System.getProperty("HYPER_VERBOSE"));
 
-        ProcessBuilder pb = new ProcessBuilder(
-                javaExe,
-                "--enable-preview",
-                "-Xms512m", "-Xmx4g",
-                "-XX:+UseZGC",
-                "-cp", classpath,
-                "io.hyperstack4j.integration.NodeMain",
-                nodeId, String.valueOf(port)
-        );
+        java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of(
+                javaExe, "--enable-preview", "-Xms512m", "-Xmx4g", "-XX:+UseZGC"
+        ));
 
-        // Inherit stderr so node logs appear in the test output
+        if (!verbose) {
+            // Write a temp JUL config that silences all logging in this node JVM.
+            java.io.File q = java.io.File.createTempFile("hyper-quiet-", ".properties");
+            q.deleteOnExit();
+            try (java.io.PrintWriter pw = new java.io.PrintWriter(q)) {
+                pw.println("handlers=");   // no handlers -> nothing printed
+                pw.println(".level=OFF");
+            }
+            cmd.add("-Djava.util.logging.config.file=" + q.getAbsolutePath());
+        }
+
+        cmd.addAll(java.util.List.of("-cp", classpath,
+                "io.hyperstack4j.integration.NodeMain", nodeId, String.valueOf(port)));
+
+        ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(false);
-        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+        // In quiet mode discard node stderr entirely; in verbose mode inherit it
+        pb.redirectError(verbose
+                ? ProcessBuilder.Redirect.INHERIT
+                : ProcessBuilder.Redirect.DISCARD);
 
         Process proc = pb.start();
         log.info("Forked JVM for node [" + nodeId + "] PID=" + proc.pid());

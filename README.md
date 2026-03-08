@@ -40,15 +40,48 @@ Run large language models across a network of **affordable commodity GPUs** — 
 
 | Module | Responsibility |
 |--------|---------------|
-| `api` | OpenAPI 3.0 spec + generated JAX-RS interfaces + models. gRPC proto (`inference.proto`) for internal node communication |
+| `api` | OpenAPI 3.0 spec + generated JAX-RS interfaces + models. gRPC proto (`inference.proto`) for internal node communication, including `ActivationDtype` enum |
 | `registry` | Model Registry + Shard Planner (Hazelcast IMap, GGUF via DJL, IMQ seed scoring) |
 | `coordinator` | Coordinator + Scheduler (reactive `CompletableFuture`, Hazelcast CP leader election, Javalin REST) |
-| `node` | Inference Node — runs on each GPU machine (JCuda, JCublas, gRPC server) |
+| `node` | Inference Node — runs on each GPU machine (JCuda, JCublas, gRPC server). `ActivationDtype` + `ActivationCodec` — pure-Java compression at the gRPC boundary |
 | `kvcache` | KV Cache Manager — GPU tier (JCuda) + JVM heap tier (Caffeine). Prefix Trie for shared prompts |
 | `tokenizer` | Tokenizer (DJL SentencePiece, chat template formatter) |
 | `sampler` | Sampler — pure Java, zero deps (temperature, top-k, top-p, repetition penalty) |
 | `health` | Health Monitor (Hazelcast membership events, JCuda GPU probes, Resilience4j circuit breakers) |
-| `integration` | Multi-JVM cluster integration tests — forks real node processes, exercises full gRPC pipeline |
+| `integration` | Multi-JVM cluster integration tests — forks real node processes, exercises full gRPC pipeline including FLOAT16/INT8 compression |
+
+## Activation Compression
+
+Activation tensors shipped between nodes are the primary network bottleneck.
+At 70B scale (hidden_dim=8192, seq_len=4096) each hop costs ~64 MB over 10GbE.
+
+`ProcessPipelineClient` accepts an `ActivationDtype` to compress activations
+before each gRPC send and decompress after each receive:
+
+| Dtype | Size/element | Relative error | Transfer (70B, 10GbE) |
+|-------|-------------|---------------|-----------------------|
+| `FLOAT32` | 4 B | lossless | ~51 ms/hop |
+| `FLOAT16` | 2 B | ~0.1% | ~26 ms/hop |
+| `INT8`    | 1 B + 4 B scale | ~1% | ~13 ms/hop |
+
+```java
+// Default — no compression
+ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize);
+
+// FLOAT16 — recommended for LAN clusters
+ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize, ActivationDtype.FLOAT16);
+
+// INT8 — for bandwidth-constrained community nodes
+ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize, ActivationDtype.INT8);
+```
+
+The dtype is encoded in each `ForwardRequest` proto message (`dtype` field 9)
+so each node always knows how to decode its input. Final-node logits are always
+returned as `FLOAT32` — no precision loss on the vocabulary distribution.
+
+`ActivationCodec` is pure Java (no JNI, no external deps). FLOAT16 uses manual
+IEEE 754 half-precision bit manipulation; INT8 uses symmetric quantisation with a
+float32 scale prefix (`max(|activations|) / 127`).
 
 ## Scheduler — Reactive Design
 

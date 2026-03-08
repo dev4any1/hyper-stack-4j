@@ -533,6 +533,101 @@ under mvn verify.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. ACTIVATION COMPRESSION — ITEMS 7+9
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PROBLEM:
+  In a pipeline-parallel cluster each node-hop ships a full activation tensor
+  over the network. At 70B scale (hidden_dim=8192, seq_len=4096, FLOAT32):
+    64 MB per hop × (nodes-1) hops = hundreds of MB per generation step.
+  On 10GbE (1.25 GB/s peak) that is ~51 ms per hop — a significant bottleneck.
+
+SOLUTION (items 7 and 9 combined — same proto change):
+  A new ActivationDtype field on ForwardRequest / ForwardResponse selects the
+  wire encoding for the activation bytes. The dtype is negotiated per-request
+  (future: per-hop) so heterogeneous nodes can participate at their best precision.
+
+  FLOAT32 → 1×   raw IEEE 754 float, 4 B/elem    — lossless (default)
+  FLOAT16 → 2×   IEEE 754 half-precision, 2 B/elem — ~0.1% relative error
+  INT8    → ~4×  symmetric quantisation, 1 B/elem  — ~1% relative error
+            (4-byte float32 scale prefix + 1 signed byte per element)
+
+NETWORK IMPACT (70B, hidden=8192, seq=4096):
+  FLOAT32  64 MB   ~51 ms on 10GbE
+  FLOAT16  32 MB   ~26 ms           — saves 25 ms per hop
+  INT8     16 MB   ~13 ms           — saves 38 ms per hop
+
+QUANTIZATION-AWARE SHARDING (item 7):
+  The ActivationDtype on the wire enables heterogeneous nodes:
+    Node A (high VRAM) → processes layers with full FLOAT32 activations
+    Node B (low VRAM)  → receives INT8 activations, works at lower precision
+  Nodes that can't fit larger dtypes simply request INT8 in their shard config.
+  This is the quantization-aware sharding mechanism; the GGUF weight file
+  already encodes per-layer quantization, so the two concerns compose cleanly.
+
+IMPLEMENTATION:
+  node/ActivationDtype.java
+    Enum: FLOAT32 | FLOAT16 | INT8
+
+  node/ActivationCodec.java (stateless, thread-safe)
+    encode(float[], ActivationDtype) → byte[]
+    decode(byte[], ActivationDtype)  → float[]
+
+    FLOAT16 uses manual IEEE 754 bit manipulation (no JNI, pure Java 21):
+      floatToHalf(float)  — handles normals, subnormals, ±∞, NaN, over/underflow
+      halfToFloat(short)  — full round-trip
+
+    INT8 uses symmetric quantisation:
+      scale  = max(|activations|) / 127   (guard: scale=1 for all-zero arrays)
+      encode = round(f / scale), clamped to [-127, 127]
+      decode = byte × scale
+      Layout: [scale:float32 big-endian (4 B)][quantised bytes × N]
+
+  api/inference.proto changes:
+    + enum ActivationDtype { FLOAT32=0; FLOAT16=1; INT8=2; }
+    + ForwardRequest.dtype  = field 9   (ActivationDtype)
+    + ForwardResponse.dtype = field 5   (ActivationDtype)
+
+  integration/ProcessPipelineClient.java
+    New ctor: ProcessPipelineClient(nodes, vocabSize, ActivationDtype)
+    Before each ForwardRequest:  activation = ActivationCodec.encode(floats, dtype)
+    After each ForwardResponse:  floats      = ActivationCodec.decode(bytes, dtype)
+    Final-node logits: always decoded as FLOAT32 (no loss on vocab distribution)
+
+  integration/EmbeddedNodeServer.java
+    Reads dtype from ForwardRequest proto; decodes input activation accordingly.
+    Encodes output activation with the same dtype (FLOAT32 for final node only).
+
+  integration/ClusterHarness.java
+    + nodeAddresses() — returns List<NodeAddress> for building custom-dtype clients.
+
+TESTS:
+  node/ActivationCodecTest.java  (17 tests — unit)
+    float32_roundtrip_is_bitwise_lossless
+    float32_encoded_size_is_4_bytes_per_element
+    float16_roundtrip_has_bounded_error_for_typical_activations  (max 0.002 abs)
+    float16_encoded_size_is_exactly_half_of_float32
+    float16_handles_zero_array
+    float16_handles_positive_and_negative_values
+    float16_overflow_becomes_infinity
+    float16_preserves_zero_and_negative_zero
+    float16_small_values_underflow_to_zero_gracefully
+    int8_roundtrip_has_bounded_error_for_typical_activations
+    int8_encoded_size_is_4_byte_scale_plus_1_byte_per_element
+    int8_gives_approximately_4x_size_reduction_vs_float32
+    int8_handles_all_zero_array_without_divide_by_zero
+    int8_preserves_sign_of_each_element
+    decode_null_returns_empty_array_for_all_dtypes
+    decode_empty_bytes_returns_empty_array_for_all_dtypes
+    single_element_roundtrip (parameterised across all 3 dtypes)
+    compression_ratios_match_expected_sizes
+
+  integration/ThreeNodeClusterIT.java  (3 new tests — IT)
+    float16PipelineProducesSameWinnerToken   (order 7)
+    int8PipelineProducesSameWinnerToken      (order 8)
+    generationLoopWithFloat16Compression     (order 9)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 10. FULL TOKEN GENERATION DATA FLOW
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

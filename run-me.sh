@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# hyper-stack-4j — local dev runner
+# hyper-stack-4j — dev runner
 # Requires: JDK 21+  ·  Maven 3.8+
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
@@ -10,7 +10,8 @@ MVN="${MVN:-mvn}"     # override: MVN=/path/to/mvn ./run-me.sh test
 PORT="${PORT:-8080}"  # coordinator REST port
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; DIM='\033[2m'; NC='\033[0m'
 info() { echo -e "${CYAN}▶ $*${NC}"; }
 ok()   { echo -e "${GREEN}✔ $*${NC}"; }
 warn() { echo -e "${YELLOW}⚠ $*${NC}"; }
@@ -18,13 +19,82 @@ err()  { echo -e "${RED}✖ $*${NC}" >&2; exit 1; }
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 check_deps() {
-  command -v java   >/dev/null 2>&1 || err "JDK 21+ not found. Install from https://adoptium.net"
-  command -v "$MVN" >/dev/null 2>&1 || err "Maven not found.   brew install maven  or  sudo apt install maven"
+  command -v java    >/dev/null 2>&1 || err "JDK 21+ not found. Install from https://adoptium.net"
+  command -v "$MVN"  >/dev/null 2>&1 || err "Maven not found.   brew install maven  or  sudo apt install maven"
   JAVA_VER=$(java -version 2>&1 | awk -F'"' '/version/{print $2}' | cut -d. -f1)
   [[ "${JAVA_VER:-0}" -ge 21 ]] || err "JDK 21+ required (found: $JAVA_VER)"
 }
 
 # ── Commands ──────────────────────────────────────────────────────────────────
+
+cmd_cluster() {
+  # ── Parse optional flags ──────────────────────────────────────────────────
+  local dtype="${DTYPE:-FLOAT32}"
+  local max_tokens="${MAX_TOKENS:-200}"
+  local temperature="${TEMPERATURE:-0.7}"
+  local verbose="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --dtype)        dtype="$2";        shift 2 ;;
+      --max-tokens)   max_tokens="$2";   shift 2 ;;
+      --temperature)  temperature="$2";  shift 2 ;;
+      --float16|--fp16) dtype="FLOAT16"; shift ;;
+      --int8)           dtype="INT8";    shift ;;
+      --verbose|-v)     verbose="true";  shift ;;
+      --help)
+        echo ""
+        echo "  Usage: $0 cluster [flags]"
+        echo ""
+        echo "  --dtype FLOAT32|FLOAT16|INT8   activation wire format (default FLOAT32)"
+        echo "  --float16 / --fp16             shorthand for --dtype FLOAT16"
+        echo "  --int8                         shorthand for --dtype INT8"
+        echo "  --max-tokens N                 max generated tokens    (default 200)"
+        echo "  --temperature F                sampling temperature     (default 0.7)"
+        echo "  --verbose / -v                 show full gRPC + Maven logs"
+        echo ""
+        exit 0 ;;
+      *) err "Unknown cluster flag: $1.  Run: $0 cluster --help" ;;
+    esac
+  done
+
+  # ── Build ─────────────────────────────────────────────────────────────────
+  if [[ "$verbose" == "true" ]]; then
+    info "Building integration module (test-compile)..."
+    "$MVN" test-compile -pl integration -am --no-transfer-progress
+  else
+    # Hide OpenAPI generator banner and Maven noise — only show on error
+    build_log=$(mktemp)
+    if ! "$MVN" test-compile -pl integration -am -q --no-transfer-progress \
+         > "$build_log" 2>&1; then
+      cat "$build_log"
+      rm -f "$build_log"
+      err "Build failed"
+    fi
+    rm -f "$build_log"
+  fi
+  ok "Build OK"
+  echo ""
+
+  warn "Starting 3-node cluster  (dtype=${dtype}  max_tokens=${max_tokens}  temperature=${temperature})"
+  [[ "$verbose" == "true" ]] && warn "Verbose mode ON — gRPC logs visible"
+  warn "Ctrl-C to stop all nodes and exit"
+  echo ""
+
+  local hyper_verbose_flag=""
+  [[ "$verbose" == "true" ]] && hyper_verbose_flag="-DHYPER_VERBOSE=true"
+
+  # exec:exec (not exec:java) launches a real separate JVM.
+  # %classpath expands to the full test-scope classpath, so ClusterHarness can
+  # fork NodeMain correctly via ProcessBuilder.
+  exec "$MVN" exec:exec \
+    -pl integration \
+    -Dexec.executable=java \
+    -Dexec.classpathScope=test \
+    -Dexec.args="--enable-preview -Xms256m -Xmx2g -XX:+UseZGC ${hyper_verbose_flag} -DDTYPE=${dtype} -DMAX_TOKENS=${max_tokens} -DTEMPERATURE=${temperature} -classpath %classpath io.hyperstack4j.integration.ConsoleMain" \
+    --no-transfer-progress \
+    -q
+}
 
 cmd_test() {
   info "Running all unit tests (skipping integration)..."
@@ -113,24 +183,6 @@ cmd_health_demo() {
       reactor.onHealthProbe(event.getValue());   // <── one call drives everything
   }, true);
 
-  // What happens automatically:
-  //   node-1 VRAM reaches 99%    → VRAM_CRITICAL → circuit OPEN
-  //                                forward() transparently routes to node-2
-  //   node-1 VRAM drops to 60%   → NODE_RECOVERED → circuit reset to CLOSED
-  //                                node-1 accepts traffic again
-  //   node-2 misses 3 probes     → NODE_STALE → circuit OPEN
-  //                                both circuits OPEN → scheduler.shutdown()
-  //                                → new requests get HTTP 503
-
-── Circuit states after each event ─────────────────────────────────────────────
-
-  Scenario               node-1 circuit    node-2 circuit
-  ──────────────────     ──────────────    ──────────────
-  Both healthy           CLOSED            CLOSED
-  node-1 VRAM=99%        OPEN              CLOSED   ← route to node-2
-  node-1 recovers        CLOSED            CLOSED   ← back to normal
-  Both VRAM=99%          OPEN              OPEN     ← scheduler shutdown
-
 ── Run the tests to see every scenario live ─────────────────────────────────────
 
   ./run-me.sh test-fault
@@ -183,20 +235,30 @@ usage() {
   echo ""
   echo -e "${CYAN}hyper-stack-4j dev runner${NC}"
   echo ""
-  echo "  $0 test                   Unit tests — all modules, skip integration (~10s)"
-  echo "  $0 test-module <mod>      Unit tests for one module  e.g. coordinator  health"
-  echo "  $0 test-fault             Fault tolerance tests only (FaultTolerantPipeline, HealthReactor)"
-  echo "  $0 integration            Full integration suite — forks 3 JVMs (~30s)"
-  echo "  $0 integration-fast       InProcessClusterIT only (~250ms)"
-  echo "  $0 build                  Compile only, no tests"
-  echo "  $0 clean                  Remove all target/ directories"
-  echo "  $0 verify                 Full: compile + unit + integration"
-  echo "  $0 health-demo            Fault tolerance wiring walkthrough"
-  echo "  $0 curl-demo              Example REST API curl commands"
-  echo "  $0 watch [mod]            Auto-rerun tests on file changes (requires fswatch)"
+  echo -e "  ${GREEN}$0 cluster${NC}                   Boot 3-node cluster + interactive prompt console"
+  echo    "  $0 cluster --dtype FLOAT16    Use FLOAT16 compressed activations"
+  echo    "  $0 cluster --dtype INT8       Use INT8  compressed activations"
+  echo    "  $0 cluster --max-tokens 512   Override max generation tokens (default 200)"
+  echo    "  $0 cluster --temperature 0.9  Override sampling temperature  (default 0.7)"
+  echo    "  $0 cluster --verbose          Show full gRPC + Maven logs"
+  echo    "  $0 cluster --help             All cluster flags"
   echo ""
-  echo "  MVN=/path/to/mvn $0 test  Override Maven binary"
-  echo "  PORT=9090 $0 curl-demo    Override coordinator port"
+  echo    "  $0 test                   Unit tests — all modules, skip integration (~10s)"
+  echo    "  $0 test-module <mod>      Unit tests for one module  e.g. coordinator  health"
+  echo    "  $0 test-fault             Fault tolerance tests only"
+  echo    "  $0 integration            Full integration suite — forks 3 JVMs (~30s)"
+  echo    "  $0 integration-fast       InProcessClusterIT only (~250ms)"
+  echo    "  $0 build                  Compile only, no tests"
+  echo    "  $0 clean                  Remove all target/ directories"
+  echo    "  $0 verify                 Full: compile + unit + integration"
+  echo    "  $0 health-demo            Fault tolerance wiring walkthrough"
+  echo    "  $0 curl-demo              Example REST API curl commands"
+  echo    "  $0 watch [mod]            Auto-rerun tests on file changes (requires fswatch)"
+  echo ""
+  echo    "  Environment overrides:"
+  echo    "    MVN=/path/to/mvn ./run-me.sh test"
+  echo    "    PORT=9090 ./run-me.sh curl-demo"
+  echo    "    DTYPE=FLOAT16 MAX_TOKENS=512 ./run-me.sh cluster"
   echo ""
 }
 
@@ -204,9 +266,12 @@ usage() {
 check_deps
 
 CMD="${1:-}"
+shift || true   # drop $1 so remaining args are available as $@
+
 case "$CMD" in
+  cluster)           cmd_cluster "$@" ;;
   test)              cmd_test ;;
-  test-module)       cmd_test_module "${2:-}" ;;
+  test-module)       cmd_test_module "${1:-}" ;;
   test-fault)        cmd_test_fault ;;
   integration)       cmd_integration ;;
   integration-fast)  cmd_integration_fast ;;
@@ -215,6 +280,6 @@ case "$CMD" in
   verify)            cmd_verify ;;
   health-demo)       cmd_health_demo ;;
   curl-demo)         cmd_curl_demo ;;
-  watch)             cmd_watch "${2:-coordinator}" ;;
+  watch)             cmd_watch "${1:-coordinator}" ;;
   *)                 usage ;;
 esac
