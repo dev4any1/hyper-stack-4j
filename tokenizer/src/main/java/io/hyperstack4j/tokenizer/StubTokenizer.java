@@ -72,7 +72,12 @@ public final class StubTokenizer implements Tokenizer {
 
     @Override
     public String decodeToken(int tokenId) {
-        String token = reverse.getOrDefault(tokenId, "");
+        String token = reverse.get(tokenId);
+        if (token == null) {
+            // Token not yet in vocab (e.g. stub winner from StubForwardPassHandler).
+            // Return a visible placeholder so streaming output is never invisible.
+            return "tok" + tokenId + " ";
+        }
         // suppress special tokens for streaming
         if (token.startsWith("<") && token.endsWith(">")) return "";
         return token + " ";

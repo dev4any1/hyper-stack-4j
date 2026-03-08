@@ -43,9 +43,11 @@ public final class ConsoleMain {
 
     // Silence gRPC / Netty / hyperstack noise — keep the console readable.
     // Runs before main() so nothing leaks during static init of other classes.
-    // In verbose mode (HYPER_VERBOSE=true) this block is skipped entirely.
+    // In verbose mode (HYPER_VERBOSE=true) SLF4J/logback is re-opened to DEBUG.
     static {
-        if (!"true".equalsIgnoreCase(System.getProperty("HYPER_VERBOSE"))) {
+        boolean verbose = "true".equalsIgnoreCase(System.getProperty("HYPER_VERBOSE"));
+
+        if (!verbose) {
             // JUL — covers grpc-java, hyperstack4j
             java.util.logging.LogManager.getLogManager().reset();
             java.util.logging.Logger root = java.util.logging.Logger.getLogger("");
@@ -58,6 +60,17 @@ public final class ConsoleMain {
                 java.util.logging.Logger.getLogger(ns)
                         .setLevel(java.util.logging.Level.OFF);
             }
+            // logback-test.xml already defaults root level to ERROR — no action needed.
+
+        } else {
+            // Verbose mode: logback-test.xml defaults root to ERROR, so raise it back
+            // to DEBUG so gRPC / Netty wire-level logs become visible again.
+            try {
+                ch.qos.logback.classic.Logger logbackRoot =
+                        (ch.qos.logback.classic.Logger)
+                        org.slf4j.LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+                logbackRoot.setLevel(ch.qos.logback.classic.Level.DEBUG);
+            } catch (Exception ignored) { /* logback not on classpath — safe to skip */ }
         }
     }
 
