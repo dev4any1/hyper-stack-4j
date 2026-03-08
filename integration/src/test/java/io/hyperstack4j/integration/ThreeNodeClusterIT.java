@@ -94,8 +94,14 @@ class ThreeNodeClusterIT {
 
         assertThat(logits).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
 
-        // StubForwardPassHandler puts 100.0f at token 42
-        float max = logits[42];
+        // StubForwardPassHandler picks winner = STUB_FIRST + (startPos % 7).
+        // This call uses startPos=0, so winner is always STUB_FIRST (3).
+        float max = Float.NEGATIVE_INFINITY;
+        int maxIdx = -1;
+        for (int i = 0; i < logits.length; i++) {
+            if (logits[i] > max) { max = logits[i]; maxIdx = i; }
+        }
+        assertThat(maxIdx).isBetween(3, 9); // must be a pre-registered stub word
         for (float l : logits) assertThat(max).isGreaterThanOrEqualTo(l);
     }
 

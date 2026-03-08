@@ -2,6 +2,10 @@ package io.hyperstack4j.integration;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.List;
 
 import io.hyperstack4j.coordinator.GenerationLoop;
@@ -30,9 +34,19 @@ import io.hyperstack4j.tokenizer.StubTokenizer;
  *   - Ctrl-C triggers the shutdown hook and tears down all 3 node JVMs
  *
  * Environment variables:
- *   DTYPE        FLOAT32 | FLOAT16 | INT8   (default: FLOAT32)
- *   MAX_TOKENS   integer                    (default: 200)
- *   TEMPERATURE  float                      (default: 0.7)
+ *   DTYPE         FLOAT32 | FLOAT16 | INT8   (default: FLOAT32)
+ *   MAX_TOKENS    integer                    (default: 200)
+ *   TEMPERATURE   float                      (default: 0.7)
+ *
+ *   OLLAMA_MODEL  e.g. tinyllama or llama3   — when set, skips the stub gRPC
+ *                 cluster entirely and streams real tokens from a local Ollama
+ *                 instance (http://localhost:11434).  No extra Maven dependency
+ *                 needed — uses java.net.http.HttpClient (built-in since JDK 11).
+ *   OLLAMA_URL    override Ollama base URL   (default: http://localhost:11434)
+ *
+ *   MODEL_PATH    path to a GGUF model file — when set, uses CpuForwardPassHandler
+ *                 on each node to run real transformer inference instead of stubs.
+ *                 e.g. MODEL_PATH=/models/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
  *
  * Launched by run-me.sh cluster via:
  *   mvn exec:java -pl integration \
@@ -84,20 +98,154 @@ public final class ConsoleMain {
 
     public static void main(String[] args) throws Exception {
 
-    // ── Config — reads -DDTYPE=... / -DMAX_TOKENS=... / -DTEMPERATURE=... (exec:exec)
-    //            falls back to DTYPE= / MAX_TOKENS= / TEMPERATURE= env vars
-    ActivationDtype dtype       = parseDtype(syspropOrEnv("DTYPE",       "FLOAT32"));
-    int             maxTokens   = parseIntVal(syspropOrEnv("MAX_TOKENS",  "200"));
-    float           temperature = parseFloatVal(syspropOrEnv("TEMPERATURE", "0.7"));
+        // ── Config — reads -DDTYPE=... etc (exec:exec) or env vars
+        ActivationDtype dtype       = parseDtype(syspropOrEnv("DTYPE",        "FLOAT32"));
+        int             maxTokens   = parseIntVal(syspropOrEnv("MAX_TOKENS",   "200"));
+        float           temperature = parseFloatVal(syspropOrEnv("TEMPERATURE", "0.7"));
+        String          ollamaModel = syspropOrEnv("OLLAMA_MODEL", "");
+        String          ollamaUrl   = syspropOrEnv("OLLAMA_URL",   "http://localhost:11434");
+        String          modelPath   = syspropOrEnv("MODEL_PATH",   "");
 
-        banner(dtype, maxTokens, temperature);
+        banner(dtype, maxTokens, temperature, ollamaModel.isBlank() && !modelPath.isBlank() ? "(gguf: " + java.nio.file.Path.of(modelPath).getFileName() + ")" : ollamaModel);
 
-        // ── Boot cluster ──────────────────────────────────────────────────────
+        if (!ollamaModel.isBlank()) {
+            runOllamaRepl(ollamaModel, ollamaUrl, maxTokens, temperature);
+        } else {
+            runStubClusterRepl(dtype, maxTokens, temperature, modelPath);
+        }
+    }
+
+    // ── Ollama REPL ────────────────────────────────────────────────────────────────
+
+    /**
+     * Real-model mode: bypass the stub cluster entirely.
+     * Streams tokens from a local Ollama instance using java.net.http.HttpClient
+     * (JDK built-in — zero extra Maven dependencies).
+     *
+     * Get started:
+     *   curl -fsSL https://ollama.com/install.sh | sh
+     *   ollama pull tinyllama       # 637 MB — fast on CPU, good for dev
+     *   ollama pull llama3.2        # 2 GB  — much better quality
+     *   ollama pull mistral         # 4 GB  — excellent quality
+     *
+     * Then run:
+     *   OLLAMA_MODEL=tinyllama ./run-me.sh cluster
+     *   OLLAMA_MODEL=llama3.2  MAX_TOKENS=500 ./run-me.sh cluster
+     */
+    private static void runOllamaRepl(String model, String baseUrl,
+                                      int maxTokens, float temperature) throws Exception {
+        print(CYAN + "▶ Ollama mode — model: " + BOLD + model + RESET + CYAN
+                + "  url: " + baseUrl + RESET);
+
+        HttpClient http = HttpClient.newHttpClient();
+
+        // Verify Ollama is reachable before entering the REPL
+        try {
+            HttpRequest ping = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/api/tags"))
+                    .GET().build();
+            HttpResponse<String> resp = http.send(ping, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) throw new RuntimeException("HTTP " + resp.statusCode());
+            print(GREEN + "✔ Ollama reachable.  Streaming with " + model + RESET + "\n");
+        } catch (Exception e) {
+            print("\033[0;31m✖ Cannot reach Ollama at " + baseUrl + ": " + e.getMessage() + "\033[0m");
+            print(DIM + "  Is Ollama running?  Try:  ollama serve" + RESET);
+            print(DIM + "  Model installed?    Try:  ollama pull " + model + RESET);
+            System.exit(1);
+        }
+
+        print(DIM + "Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit." + RESET);
+        print("");
+
+        // Conversation history — Ollama /api/chat keeps context across turns
+        java.util.List<String> history = new java.util.ArrayList<>();
+
+        BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
+        String line;
+
+        while (true) {
+            System.out.print(BOLD + CYAN + "you> " + RESET);
+            System.out.flush();
+
+            line = stdin.readLine();
+            if (line == null) break;
+            line = line.strip();
+            if (line.isEmpty()) continue;
+            if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit")) break;
+
+            history.add("{\"role\":\"user\",\"content\":\"" + escapeJson(line) + "\"}");
+
+            String body = "{\"model\":\"" + model + "\",\"stream\":true,"
+                    + "\"options\":{\"num_predict\":" + maxTokens
+                    + ",\"temperature\":" + temperature + "},"
+                    + "\"messages\":[" + String.join(",", history) + "]}";
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(baseUrl + "/api/chat"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            System.out.print(BOLD + GREEN + "bot> " + RESET);
+            System.out.flush();
+
+            long         start   = System.currentTimeMillis();
+            StringBuilder reply  = new StringBuilder();
+            int          tokens  = 0;
+
+            HttpResponse<java.io.InputStream> resp =
+                    http.send(req, HttpResponse.BodyHandlers.ofInputStream());
+
+            if (resp.statusCode() != 200) {
+                print("\033[0;31m\n✖ Ollama returned HTTP " + resp.statusCode() + "\033[0m");
+                continue;
+            }
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(resp.body()))) {
+                String jsonLine;
+                while ((jsonLine = reader.readLine()) != null && !jsonLine.isBlank()) {
+                    // Each streaming line: { "message": { "content": "token" }, "done": false }
+                    String piece = extractJsonString(jsonLine, "content");
+                    if (piece != null && !piece.isEmpty()) {
+                        System.out.print(piece);
+                        System.out.flush();
+                        reply.append(piece);
+                    }
+                    if (jsonLine.contains("\"done\":true")) {
+                        // Final line carries eval_count (actual token count)
+                        String ec = extractJsonField(jsonLine, "eval_count");
+                        if (ec != null) {
+                            try { tokens = Integer.parseInt(ec); } catch (NumberFormatException ignored) {}
+                        }
+                        break;
+                    }
+                    tokens++;
+                }
+            }
+
+            long elapsed = System.currentTimeMillis() - start;
+            System.out.println();
+            System.out.printf(DIM + "     [%d tokens · %d ms · %s]" + RESET + "%n",
+                    tokens, elapsed, model);
+            System.out.println();
+
+            // Append assistant reply to history for multi-turn context
+            history.add("{\"role\":\"assistant\",\"content\":\"" + escapeJson(reply.toString()) + "\"}");
+        }
+
+        print(YELLOW + "\nbye." + RESET);
+        System.exit(0);
+    }
+
+    // ── Stub cluster REPL ──────────────────────────────────────────────────────────
+
+    private static void runStubClusterRepl(ActivationDtype dtype, int maxTokens,
+                                           float temperature, String modelPath) throws Exception {
         print(CYAN + "▶ Starting 3-node cluster..." + RESET);
 
-        ClusterHarness harness = ClusterHarness.threeNodes();
+        ClusterHarness harness = ClusterHarness.threeNodes(modelPath.isBlank() ? null : modelPath);
 
-        // Shutdown hook — fires on Ctrl-C and on normal exit
         Runtime.getRuntime().addShutdownHook(Thread.ofVirtual().unstarted(() -> {
             print("\n" + YELLOW + "⏹ Shutting down cluster..." + RESET);
             try { harness.stop(); } catch (Exception e) { /* best effort */ }
@@ -107,7 +255,6 @@ public final class ConsoleMain {
         harness.start();
         print(GREEN + "✔ Cluster ready  (" + dtype + " activations)" + RESET + "\n");
 
-        // ── Wire coordinator ──────────────────────────────────────────────────
         ProcessPipelineClient pipeline = new ProcessPipelineClient(
                 harness.nodeAddresses(),
                 EmbeddedNodeServer.VOCAB_SIZE,
@@ -128,7 +275,6 @@ public final class ConsoleMain {
                 .withMaxTokens(maxTokens)
                 .withTemperature(temperature);
 
-        // ── REPL ──────────────────────────────────────────────────────────────
         print(DIM + "Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit." + RESET);
         print("");
 
@@ -140,12 +286,10 @@ public final class ConsoleMain {
             System.out.flush();
 
             line = stdin.readLine();
-
-            if (line == null) break;                          // EOF (pipe closed)
+            if (line == null) break;
             line = line.strip();
             if (line.isEmpty()) continue;
-            if (line.equalsIgnoreCase("exit") ||
-                line.equalsIgnoreCase("quit")) break;
+            if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit")) break;
 
             InferenceRequest request = InferenceRequest.of(
                     "tinyllama",
@@ -166,19 +310,19 @@ public final class ConsoleMain {
 
             long elapsed = System.currentTimeMillis() - start;
 
-            System.out.println();   // newline after last token
+            System.out.println();
             System.out.printf(DIM + "     [%d tokens · %d ms · %s]" + RESET + "%n",
                     result.generatedTokens(), elapsed, dtype);
             System.out.println();
         }
 
         print(YELLOW + "\nbye." + RESET);
-        System.exit(0);   // trigger shutdown hook
+        System.exit(0);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static void banner(ActivationDtype dtype, int maxTokens, float temperature) {
+    private static void banner(ActivationDtype dtype, int maxTokens, float temperature, String ollamaModel) {
         System.out.println();
         System.out.println(BOLD + CYAN
                 + "  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ");
@@ -194,12 +338,14 @@ public final class ConsoleMain {
                 "  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝"
                 + RESET);
         System.out.println();
-        System.out.println(CYAN + "  hyper-stack-4j  ·  3-node stub cluster  ·  interactive console" + RESET);
+        String mode = ollamaModel.isBlank() ? "3-node stub cluster" : "ollama · " + ollamaModel;
+        System.out.println(CYAN + "  hyper-stack-4j  ·  " + mode + "  ·  interactive console" + RESET);
         System.out.println(DIM
-                + "  dtype=" + dtype
-                + "  max_tokens=" + maxTokens
-                + "  temperature=" + temperature
-                + "  nodes=3 (localhost:19092-19094)"
+                + (ollamaModel.isBlank()
+                    ? "  dtype=" + dtype + "  max_tokens=" + maxTokens
+                        + "  temperature=" + temperature + "  nodes=3 (localhost:19092-19094)"
+                    : "  model=" + ollamaModel + "  max_tokens=" + maxTokens
+                        + "  temperature=" + temperature)
                 + RESET);
         System.out.println();
     }
@@ -233,4 +379,65 @@ public final class ConsoleMain {
     private static float parseFloatVal(String val) {
         try { return Float.parseFloat(val.strip()); } catch (NumberFormatException e) { return 0.7f; }
     }
+
+    // ── Tiny JSON helpers (no external library needed) ───────────────────────────
+
+    /**
+     * Extract the string value of a JSON key from a flat JSON line.
+     * Handles: "key":"value" and "key": "value" and nested one level deep.
+     * Good enough for Ollama’s streaming protocol; not a general parser.
+     */
+    private static String extractJsonString(String json, String key) {
+        String needle = "\"" + key + "\"";
+        int ki = json.indexOf(needle);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + needle.length());
+        if (colon < 0) return null;
+        int q1 = json.indexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        StringBuilder sb = new StringBuilder();
+        for (int i = q1 + 1; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (c == '\\') {
+                if (i + 1 < json.length()) {
+                    char next = json.charAt(++i);
+                    switch (next) {
+                        case 'n' -> sb.append('\n');
+                        case 't' -> sb.append('\t');
+                        case 'r' -> sb.append('\r');
+                        default  -> sb.append(next);
+                    }
+                }
+            } else if (c == '"') {
+                break;
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** Extract a raw (non-string) JSON field value, e.g. a number. */
+    private static String extractJsonField(String json, String key) {
+        String needle = "\"" + key + "\"";
+        int ki = json.indexOf(needle);
+        if (ki < 0) return null;
+        int colon = json.indexOf(':', ki + needle.length());
+        if (colon < 0) return null;
+        int start = colon + 1;
+        while (start < json.length() && json.charAt(start) == ' ') start++;
+        int end = start;
+        while (end < json.length() && ",}]".indexOf(json.charAt(end)) < 0) end++;
+        return json.substring(start, end).strip();
+    }
+
+    /** Escape a plain string for embedding inside a JSON string value. */
+    private static String escapeJson(String s) {
+        return s.replace("\\", "\\\\")
+                .replace("\"",  "\\\"")
+                .replace("\n",  "\\n")
+                .replace("\r",  "\\r")
+                .replace("\t",  "\\t");
+    }
+
 }

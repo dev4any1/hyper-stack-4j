@@ -1,6 +1,7 @@
 package io.hyperstack4j.integration;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -21,6 +22,8 @@ import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ActivationCodec;
+import io.hyperstack4j.node.CpuForwardPassHandler;
+import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.ForwardResult;
 import io.hyperstack4j.node.ShardContext;
 import io.hyperstack4j.node.StubForwardPassHandler;
@@ -45,17 +48,26 @@ public final class EmbeddedNodeServer {
     private final int    port;
     private final Server grpcServer;
 
-    // TinyLlama-1.1B shape constants
+    // TinyLlama-1.1B shape constants (used when no model file is supplied)
     static final int VOCAB_SIZE   = 32_000;
     static final int HIDDEN_DIM   = 2_048;
     static final int NUM_HEADS    = 32;
     static final int TOTAL_LAYERS = 22;
 
+    /** Stub mode (no real model — used by integration tests). */
     public EmbeddedNodeServer(String nodeId, int port) {
+        this(nodeId, port, null);
+    }
+
+    /**
+     * Real-model mode.
+     * @param modelPath  path to a GGUF file, or null to fall back to stub mode.
+     */
+    public EmbeddedNodeServer(String nodeId, int port, String modelPath) {
         this.nodeId = nodeId;
         this.port   = port;
         this.grpcServer = ServerBuilder.forPort(port)
-                .addService(new NodeServiceImpl(nodeId))
+                .addService(new NodeServiceImpl(nodeId, modelPath))
                 .build();
     }
 
@@ -81,15 +93,18 @@ public final class EmbeddedNodeServer {
 
         private static final long NODE_VRAM_BUDGET = 512L * 1024 * 1024;
 
-        private final String                 nodeId;
-        private final StubForwardPassHandler handler = new StubForwardPassHandler();
-        private volatile ShardContext        context;
-        private volatile KVCacheManager      kvCache;
+        private final String              nodeId;
+        private final String              modelPath; // null = stub mode
+        private volatile ForwardPassHandler handler;
+        private volatile ShardContext       context;
+        private volatile KVCacheManager     kvCache;
 
-        NodeServiceImpl(String nodeId) {
-            this.nodeId  = nodeId;
-            this.context = buildDefaultContext();
-            this.kvCache = new KVCacheManager(
+        NodeServiceImpl(String nodeId, String modelPath) {
+            this.nodeId    = nodeId;
+            this.modelPath = modelPath;
+            this.handler   = new StubForwardPassHandler(); // replaced in loadShard() when real model
+            this.context   = buildDefaultContext();
+            this.kvCache   = new KVCacheManager(
                     new GpuKVCache(NODE_VRAM_BUDGET),
                     new CpuKVCache(256)
             );
@@ -152,7 +167,33 @@ public final class EmbeddedNodeServer {
                     request.getStartLayer(), request.getEndLayer(),
                     request.getHasEmbeddings(), request.getHasOutputProjection()
             );
-            context = ShardContext.from(assignment, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
+            ShardContext newCtx = ShardContext.from(assignment, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
+
+            String msg;
+            if (modelPath != null) {
+                try {
+                    log.info("Loading real model from: " + modelPath);
+                    log.info("Shard context: layers " + request.getStartLayer() + "-" + request.getEndLayer()
+                            + " embeddings=" + request.getHasEmbeddings() 
+                            + " outputProj=" + request.getHasOutputProjection());
+                    handler = CpuForwardPassHandler.load(Path.of(modelPath), newCtx);
+                    msg = "Real shard loaded (CpuForwardPassHandler) layers "
+                            + request.getStartLayer() + "–" + request.getEndLayer();
+                    log.info(msg);
+                } catch (Exception e) {
+                    log.severe("FAILED to load real model: " + e.getMessage());
+                    e.printStackTrace();  // <-- Print full stack trace
+                    log.warning("Falling back to stub handler");
+                    handler = new StubForwardPassHandler();
+                    msg = "Stub shard (model load failed: " + e.getMessage() + ") layers "
+                            + request.getStartLayer() + "–" + request.getEndLayer();
+                }
+            } else {
+                handler = new StubForwardPassHandler();
+                msg = "Stub shard loaded layers "
+                        + request.getStartLayer() + "–" + request.getEndLayer();
+            }
+            context = newCtx;
 
             LayerRange range = LayerRange.of(request.getStartLayer(), request.getEndLayer());
             kvCache = new KVCacheManager(
@@ -164,8 +205,7 @@ public final class EmbeddedNodeServer {
 
             responseObserver.onNext(LoadShardResponse.newBuilder()
                     .setSuccess(true)
-                    .setMessage("Stub shard loaded layers "
-                            + request.getStartLayer() + "–" + request.getEndLayer())
+                    .setMessage(msg)
                     .build());
             responseObserver.onCompleted();
         }
