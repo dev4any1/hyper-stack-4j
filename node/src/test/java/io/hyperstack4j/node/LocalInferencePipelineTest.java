@@ -26,7 +26,7 @@ class LocalInferencePipelineTest {
 
     @Test
     void single_handler_pipeline_returns_logits() {
-        StubForwardPassHandler handler = new StubForwardPassHandler(55);
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler(55);
         LocalInferencePipeline pipeline = LocalInferencePipeline.from(
                 twoNodeMap(), handler, VOCAB, HIDDEN_DIM, NUM_HEADS);
 
@@ -38,7 +38,7 @@ class LocalInferencePipelineTest {
 
     @Test
     void pipeline_calls_each_stage_once_per_forward() {
-        StubForwardPassHandler handler = new StubForwardPassHandler();
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler();
         LocalInferencePipeline pipeline = LocalInferencePipeline.from(
                 twoNodeMap(), handler, VOCAB, HIDDEN_DIM, NUM_HEADS);
 
@@ -50,8 +50,8 @@ class LocalInferencePipelineTest {
 
     @Test
     void pipeline_with_per_stage_handlers() {
-        StubForwardPassHandler h1 = new StubForwardPassHandler();
-        StubForwardPassHandler h2 = new StubForwardPassHandler(88);
+        CyclicForwardPassHandler h1 = new CyclicForwardPassHandler();
+        CyclicForwardPassHandler h2 = new CyclicForwardPassHandler(88);
 
         LocalInferencePipeline pipeline = LocalInferencePipeline.from(
                 twoNodeMap(), List.of(h1, h2), VOCAB, HIDDEN_DIM, NUM_HEADS);
@@ -66,21 +66,21 @@ class LocalInferencePipelineTest {
     @Test
     void stage_count_matches_shard_map_node_count() {
         LocalInferencePipeline pipeline = LocalInferencePipeline.from(
-                twoNodeMap(), new StubForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
+                twoNodeMap(), new CyclicForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
         assertThat(pipeline.stageCount()).isEqualTo(2);
     }
 
     @Test
     void vocab_size_matches_context() {
         LocalInferencePipeline pipeline = LocalInferencePipeline.from(
-                twoNodeMap(), new StubForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
+                twoNodeMap(), new CyclicForwardPassHandler(), VOCAB, HIDDEN_DIM, NUM_HEADS);
         assertThat(pipeline.vocabSize()).isEqualTo(VOCAB);
     }
 
     @Test
     void rejects_handler_count_mismatch() {
         assertThatThrownBy(() -> LocalInferencePipeline.from(
-                twoNodeMap(), List.of(new StubForwardPassHandler()), VOCAB, HIDDEN_DIM, NUM_HEADS))
+                twoNodeMap(), List.of(new CyclicForwardPassHandler()), VOCAB, HIDDEN_DIM, NUM_HEADS))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 }

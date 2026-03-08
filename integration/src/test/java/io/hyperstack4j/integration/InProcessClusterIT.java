@@ -23,7 +23,7 @@ import io.hyperstack4j.kvcache.KVBlock;
 import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.LocalInferencePipeline;
-import io.hyperstack4j.node.StubForwardPassHandler;
+import io.hyperstack4j.node.CyclicForwardPassHandler;
 import io.hyperstack4j.registry.NodeDescriptor;
 import io.hyperstack4j.registry.NodeStatus;
 import io.hyperstack4j.registry.ShardMap;
@@ -31,12 +31,12 @@ import io.hyperstack4j.registry.ShardPlanner;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.StubTokenizer;
+import io.hyperstack4j.tokenizer.SimpleTokenizer;
 
 /**
  * In-process 3-node integration test.
  *
- * Wires 3 StubForwardPassHandlers via LocalInferencePipeline,
+ * Wires 3 CyclicForwardPassHandlers via LocalInferencePipeline,
  * runs a full GenerationLoop end-to-end, zero network.
  *
  * Run: mvn verify -pl integration -Dit.test=InProcessClusterIT
@@ -49,7 +49,7 @@ class InProcessClusterIT {
     private static final int HIDDEN_DIM   = 2_048;
     private static final int NUM_HEADS    = 32;
     private static final int TOTAL_LAYERS = 22;
-    private static final int STUB_WINNER  = 42; // StubForwardPassHandler puts 100.0f here
+    private static final int CYCLIC_WINNER  = 42; // CyclicForwardPassHandler puts 100.0f here
 
     private LocalInferencePipeline pipeline;
     private GenerationLoop         generationLoop;
@@ -71,16 +71,16 @@ class InProcessClusterIT {
 
         // ── 2. One handler per stage ──────────────────────────────────────────
         List<ForwardPassHandler> handlers = List.of(
-                new StubForwardPassHandler(),
-                new StubForwardPassHandler(),
-                new StubForwardPassHandler(STUB_WINNER)   // last node → logits
+                new CyclicForwardPassHandler(),
+                new CyclicForwardPassHandler(),
+                new CyclicForwardPassHandler(CYCLIC_WINNER)   // last node → logits
         );
 
         pipeline = LocalInferencePipeline.from(shardMap, handlers, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
 
         // ── 3. Wire coordinator components ────────────────────────────────────
         generationLoop = new GenerationLoop(
-                new StubTokenizer(),
+                new SimpleTokenizer(),
                 Sampler.create(),
                 pipeline,
                 new KVCacheManager(
@@ -104,7 +104,7 @@ class InProcessClusterIT {
     void singleForwardPassReturnsLogits() {
         float[] logits = pipeline.forward("req-001", new int[]{1, 2, 3}, 0);
         assertThat(logits).hasSize(VOCAB_SIZE);
-        assertThat(logits[STUB_WINNER]).isGreaterThan(logits[0]);
+        assertThat(logits[CYCLIC_WINNER]).isGreaterThan(logits[0]);
     }
 
     @Test

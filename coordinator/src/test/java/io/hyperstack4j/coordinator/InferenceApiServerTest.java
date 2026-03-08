@@ -21,7 +21,7 @@ import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.LocalInferencePipeline;
-import io.hyperstack4j.node.StubForwardPassHandler;
+import io.hyperstack4j.node.CyclicForwardPassHandler;
 import io.hyperstack4j.registry.ModelDescriptor;
 import io.hyperstack4j.registry.ModelRegistry;
 import io.hyperstack4j.registry.ModelStatus;
@@ -31,7 +31,7 @@ import io.hyperstack4j.registry.QuantizationType;
 import io.hyperstack4j.registry.ShardPlanner;
 import io.hyperstack4j.registry.ShardMap;
 import io.hyperstack4j.sampler.Sampler;
-import io.hyperstack4j.tokenizer.StubTokenizer;
+import io.hyperstack4j.tokenizer.SimpleTokenizer;
 
 class InferenceApiServerTest {
 
@@ -59,9 +59,9 @@ class InferenceApiServerTest {
                 .plan("tinyllama", TOTAL_LAYERS, vramPerLayer, nodes);
 
         List<ForwardPassHandler> handlers = List.of(
-                new StubForwardPassHandler(),
-                new StubForwardPassHandler(),
-                new StubForwardPassHandler(42)
+                new CyclicForwardPassHandler(),
+                new CyclicForwardPassHandler(),
+                new CyclicForwardPassHandler(42)
         );
         var pipeline = LocalInferencePipeline.from(
                 shardMap, handlers, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
@@ -69,7 +69,7 @@ class InferenceApiServerTest {
         var kvCache = new KVCacheManager(
                 new GpuKVCache(128L * 1024 * 1024), new CpuKVCache(256));
 
-        var loop      = new GenerationLoop(new StubTokenizer(), Sampler.create(), pipeline, kvCache);
+        var loop      = new GenerationLoop(new SimpleTokenizer(), Sampler.create(), pipeline, kvCache);
         var scheduler = new RequestScheduler(64, loop);
 
         // Build a registry with tinyllama already loaded

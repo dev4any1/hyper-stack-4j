@@ -19,7 +19,7 @@ import io.hyperstack4j.node.InferencePipeline;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.StubTokenizer;
+import io.hyperstack4j.tokenizer.SimpleTokenizer;
 
 class RequestSchedulerBatchTest {
 
@@ -29,9 +29,9 @@ class RequestSchedulerBatchTest {
     @BeforeEach
     void setUp() {
         loop = new GenerationLoop(
-                new StubTokenizer(),
+                new SimpleTokenizer(),
                 Sampler.create(),
-                new StubInferencePipeline(),
+                new SequenceInferencePipeline(),
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000))
         );
     }
@@ -133,7 +133,7 @@ class RequestSchedulerBatchTest {
         };
 
         GenerationLoop batchLoop = new GenerationLoop(
-                new StubTokenizer(), Sampler.create(), countingPipeline,
+                new SimpleTokenizer(), Sampler.create(), countingPipeline,
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000)));
 
         // Small window so requests group together; large enough batch size
@@ -192,7 +192,7 @@ class RequestSchedulerBatchTest {
             @Override public int vocabSize() { return 1000; }
         };
         GenerationLoop slowLoop = new GenerationLoop(
-                new StubTokenizer(), Sampler.create(), slowPipeline,
+                new SimpleTokenizer(), Sampler.create(), slowPipeline,
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000)));
 
         // Large window so requests queue up before dispatch

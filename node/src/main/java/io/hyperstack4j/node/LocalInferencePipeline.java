@@ -11,7 +11,7 @@ import io.hyperstack4j.registry.ShardMap;
  * ShardMap order without any gRPC or network.
  *
  * This is the KEY class for integration testing: - Wires together N
- * StubForwardPassHandlers - Implements coordinator's InferencePipeline
+ * CyclicForwardPassHandlers - Implements coordinator's InferencePipeline
  * interface - Lets GenerationLoop run end-to-end with zero network
  *
  * In production this is replaced by NodePipelineClient which makes real gRPC

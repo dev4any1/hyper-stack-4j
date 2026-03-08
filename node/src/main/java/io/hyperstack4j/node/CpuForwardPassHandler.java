@@ -10,7 +10,7 @@ import java.util.logging.Logger;
  * CPU implementation of the LLaMA-family transformer forward pass.
  *
  * This is the production-path implementation that replaces
- * StubForwardPassHandler once a real GGUF model file is available.
+ * CyclicForwardPassHandler once a real GGUF model file is available.
  * GpuForwardPassHandler will use the same interface but accelerate the matmuls
  * with JCuda/JCublas — the logic above the math primitives is identical.
  *

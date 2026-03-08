@@ -16,7 +16,7 @@ class ForwardPassHandlerTest {
 
     @Test
     void intermediate_node_returns_activations_of_hidden_dim_size() {
-        StubForwardPassHandler handler = new StubForwardPassHandler();
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler();
         ForwardRequest req = ForwardRequest.withTokens("req-1", new int[]{1, 2, 3}, 0);
 
         ForwardResult result = handler.forward(req, intermediateCtx());
@@ -28,7 +28,7 @@ class ForwardPassHandlerTest {
 
     @Test
     void last_node_returns_logits_of_vocab_size() {
-        StubForwardPassHandler handler = new StubForwardPassHandler(99);
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler(99);
         ForwardRequest req = ForwardRequest.withActivations("req-1", new float[4096], 0);
 
         ForwardResult result = handler.forward(req, lastNodeCtx());
@@ -41,7 +41,7 @@ class ForwardPassHandlerTest {
     @Test
     void winner_token_has_highest_logit() {
         int winner = 777;
-        StubForwardPassHandler handler = new StubForwardPassHandler(winner);
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler(winner);
         ForwardRequest req = ForwardRequest.withActivations("req-1", new float[4096], 0);
 
         ForwardResult result = handler.forward(req, lastNodeCtx());
@@ -55,7 +55,7 @@ class ForwardPassHandlerTest {
 
     @Test
     void call_count_increments_per_forward() {
-        StubForwardPassHandler handler = new StubForwardPassHandler();
+        CyclicForwardPassHandler handler = new CyclicForwardPassHandler();
         ForwardRequest req = ForwardRequest.withTokens("req-1", new int[]{1}, 0);
 
         handler.forward(req, intermediateCtx());
@@ -67,6 +67,6 @@ class ForwardPassHandlerTest {
 
     @Test
     void is_ready_returns_true() {
-        assertThat(new StubForwardPassHandler().isReady()).isTrue();
+        assertThat(new CyclicForwardPassHandler().isReady()).isTrue();
     }
 }

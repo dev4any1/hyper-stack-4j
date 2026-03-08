@@ -12,7 +12,7 @@ import java.util.logging.Logger;
  *   java ... io.hyperstack4j.integration.NodeMain <nodeId> <port> [modelPath]
  *
  * When modelPath is supplied, EmbeddedNodeServer uses CpuForwardPassHandler
- * (real transformer math) instead of StubForwardPassHandler.
+ * (real transformer math) instead of CyclicForwardPassHandler.
  *
  * Manual launch for debugging:
  *   mvn exec:java -pl integration \

@@ -2,7 +2,7 @@
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
   JDK 21 · Maven · Java-native · Commodity GPU Cluster
-  Last updated: 2026-03-07 (session 3)
+  Last updated: 2026-03-08 (session 4)
 ================================================================================
 
 
@@ -62,10 +62,14 @@ Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
   |                                TokenConsumer, RequestPriority
   +-- node/                     <- InferencePipeline, LocalInferencePipeline,
   |                                ForwardPassHandler, StubForwardPassHandler,
+  |                                CpuForwardPassHandler (real transformer math),
+  |                                GgufReader (GGUF v2/v3 binary parser),
+  |                                LlamaConfig (hyperparams from GGUF metadata),
   |                                ForwardRequest, ForwardResult, ShardContext
   +-- kvcache/                  <- KVCacheManager, GpuKVCache, CpuKVCache,
   |                                PrefixCache, KVBlock, KVKey, KVCache
   +-- tokenizer/                <- Tokenizer, StubTokenizer, DJLTokenizer,
+  |                                GgufTokenizer (SentencePiece BPE from GGUF),
   |                                ChatMessage, ChatTemplate,
   |                                ChatTemplateFormatter
   +-- sampler/                  <- Sampler, SamplingParams, SamplingStep,
@@ -74,11 +78,14 @@ Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
   |                                SampleStep
   +-- health/                   <- CircuitBreaker, CircuitState, HealthEvaluator,
   |                                HealthEvent, HealthThresholds, NodeHealth
-  +-- integration/              <- Multi-JVM cluster integration tests
-      +-- ClusterHarness        <- forks 3 node JVMs via ProcessBuilder
-      +-- EmbeddedNodeServer    <- gRPC NodeServiceImpl backed by StubForwardPassHandler
+  +-- integration/              <- Multi-JVM cluster integration tests + REPL
+      +-- ClusterHarness        <- forks 3 node JVMs; accepts optional MODEL_PATH
+      +-- EmbeddedNodeServer    <- gRPC NodeServiceImpl; uses CpuForwardPassHandler
+      |                            when MODEL_PATH set, StubForwardPassHandler otherwise
       +-- NodeMain              <- JVM entry point, prints READY:<nodeId>:<port>
       +-- ProcessPipelineClient <- InferencePipeline over real gRPC channels
+      +-- GgufTokenizer         <- SentencePiece BPE from GGUF metadata (no .model file)
+      +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model)
       +-- InProcessClusterIT    <- in-process 3-node test, zero network
       +-- ThreeNodeClusterIT    <- full 3-JVM test over real sockets
 
@@ -768,11 +775,11 @@ sampling:
   Total build time: ~15s
 
   Module breakdown:
-    85 Java source files
-    6090 lines total
-    49 production classes
-    36 test classes
-    11 integration tests (2 suites × multi-test)
+    91 Java source files (~+6 new)
+    ~6700 lines total
+    52 production classes (+3: CpuForwardPassHandler, GgufReader, LlamaConfig)
+    39 test classes (+3: GgufTokenizer, ConsoleMain updated, EmbeddedNodeServer updated)
+    15 integration tests (2 suites × multi-test)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -798,7 +805,7 @@ sampling:
     [x] integration ClusterHarness, EmbeddedNodeServer, NodeMain,
                     ProcessPipelineClient, InProcessClusterIT, ThreeNodeClusterIT
 
-  Phase 3 — Orchestration  [PARTIAL — real impl]
+  Phase 3 — Orchestration  [COMPLETE — real CPU impl, GPU impl pending]
     [x] coordinator InferenceApiServer (Javalin REST, blocking + SSE streaming)
                     SseTokenConsumer (TokenConsumer → SSE events)
     [x] coordinator BatchConfig, BatchEntry
@@ -808,9 +815,215 @@ sampling:
     [x] coordinator RetryPolicy, PipelineUnavailableException
                     FaultTolerantPipeline (circuit-breaking + retry across nodes)
                     HealthReactor (HealthEvent → circuit + scheduler lifecycle)
-    [ ] node        GpuForwardPassHandler (JCuda/JCublas) — forwardBatch() real override
+    [x] coordinator GenerationLoop prefill loop — feeds each prompt token individually
+                    so all pipeline nodes fill their KV caches before decode begins
+    [x] node        GgufReader — pure Java GGUF v2/v3 binary parser
+                    Supports: F32, F16, BF16, Q8_0, Q4_0, Q4_K (Q4_K_M), Q6_K
+                    No JNI, no external tools, no Python
+    [x] node        LlamaConfig — extracts model hyperparams from GGUF metadata
+                    (hiddenDim, numLayers, numHeads, numKvHeads, ropeTheta, ...)
+                    Works for LLaMA 2/3, TinyLlama, Mistral, Gemma
+    [x] node        CpuForwardPassHandler — full LLaMA transformer, pure Java
+                    Primitives: rmsNorm, matVec, rope, gqa (GQA with KV cache),
+                                swiGLU ffn, softmax
+                    Prefill: runs all prompt tokens sequentially to fill KV cache
+                    Decode: incremental single-token forward pass
+                    GPU path: GpuForwardPassHandler will override matVec with
+                              JCublas dgemv — same interface above the math layer
+    [x] tokenizer   GgufTokenizer — SentencePiece BPE from GGUF metadata
+                    No separate tokenizer.model file required
+                    Reads tokenizer.ggml.tokens / .scores / .token_type arrays
+                    Byte fallback tokens (<0xHH>) for OOV characters
+    [x] integration EmbeddedNodeServer — uses CpuForwardPassHandler when MODEL_PATH set
+                    ClusterHarness.threeNodes(modelPath) — passes model path to nodes
+                    ConsoleMain — loads GgufTokenizer when MODEL_PATH set
+                    End-to-end verified with TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+    [ ] node        GpuForwardPassHandler (JCuda/JCublas) — matVec → cublasSgemv
     [ ] coordinator Hazelcast leader election
 
   Phase 4 — Operations  [PENDING]
     [ ] health      GpuHealthProbe, ClusterHealthMonitor,
-                    CircuitBreakerRegistry, MetricsExporter
+                    CircuitBreakerRegistry, MetricsExporte
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+15. REAL MODEL INFERENCE (session 4)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+15.1  GgufReader
+-----------------------------------------------
+Pure Java GGUF v2/v3 file parser. Reads tensor metadata on open, then loads
+and dequantises individual tensors on demand (cached after first access).
+
+  Supported quantisation types:
+    GGML_TYPE_F32  (0)  — raw IEEE 754, 4 bytes/elem
+    GGML_TYPE_F16  (1)  — half-precision, 2 bytes/elem
+    GGML_TYPE_BF16 (30) — bfloat16, 2 bytes/elem
+    GGML_TYPE_Q8_0 (8)  — symmetric, block-32, 2-byte f16 scale + 32 signed bytes
+    GGML_TYPE_Q4_0 (2)  — symmetric, block-32, 2-byte f16 scale + 16 packed nibbles
+    GGML_TYPE_Q4_K (12) — per-superblock scale+min (6-bit each), block-256, 144 bytes
+    GGML_TYPE_Q6_K (14) — per-superblock scale (signed int8), block-256, 210 bytes
+
+  Q4_K dequantisation layout (144 bytes / 256 elements):
+    [d: f16][dmin: f16][scales: 12 bytes][qs: 128 bytes]
+    8 sub-blocks of 32 elements, low nibble = first 16, high nibble = second 16
+    scale[j] and min[j] packed as 6-bit values across the 12 scale bytes
+
+  Public API:
+    GgufReader.open(Path) throws IOException
+    r.tensor(name)        → float[]          (dequantised, cached)
+    r.metaInt/Long/Float/String(key, default) → primitive
+    r.hasTensor(name)     → boolean
+
+  No JNI. No external tools. No Python. The JVM does it all.
+
+15.2  LlamaConfig
+-----------------------------------------------
+Extracts model hyperparameters from GGUF metadata using the standard
+llm.* / {arch}.* key hierarchy. Provides fallbacks for legacy key names.
+
+  Fields:
+    hiddenDim        embedding / residual stream dimension
+    numLayers        total transformer layers
+    numHeads         query attention heads
+    numKvHeads       KV attention heads (GQA — may differ from numHeads)
+    headDim          = hiddenDim / numHeads
+    intermediateSize FFN hidden width (SwiGLU gate/up projection)
+    vocabSize        vocabulary size
+    rmsNormEps       RMS normalisation epsilon
+    ropeTheta        RoPE base frequency
+    architecture     general.architecture field (e.g. "llama")
+
+  TinyLlama-1.1B values:
+    LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4
+                headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+
+15.3  CpuForwardPassHandler
+-----------------------------------------------
+Implements the LLaMA-family transformer forward pass, pure Java.
+Constructed with a GgufReader and a ShardContext — loads only the weight
+tensors for its assigned layer range.
+
+  Load sequence:
+    token_embd.weight        (first node only, hasEmbeddings=true)
+    blk.{i}.attn_norm.weight  ┐
+    blk.{i}.ffn_norm.weight   │
+    blk.{i}.attn_q.weight     │  for each layer i in [startLayer, endLayer)
+    blk.{i}.attn_k.weight     │
+    blk.{i}.attn_v.weight     │
+    blk.{i}.attn_output.weight│
+    blk.{i}.ffn_gate.weight   │
+    blk.{i}.ffn_up.weight     │
+    blk.{i}.ffn_down.weight   ┘
+    output_norm.weight        (last node only, hasOutputProjection=true)
+    output.weight             (last node only)
+
+  Per-layer computation:
+    x_norm  = rmsNorm(x, attnNorm[li])
+    q       = W_q × x_norm      (hiddenDim × hiddenDim)
+    k       = W_k × x_norm      (kvDim × hiddenDim)
+    v       = W_v × x_norm      (kvDim × hiddenDim)
+    rope(q, pos, numHeads, headDim, ropeTheta)
+    rope(k, pos, numKvHeads, headDim, ropeTheta)
+    kCache[pos * kvDim .. +kvDim] = k       ← write to KV cache
+    vCache[pos * kvDim .. +kvDim] = v
+    attn    = gqa(q, kCache, vCache, seqLen)  ← attend over all cached positions
+    x       = x + W_o × attn               (residual)
+    x_norm2 = rmsNorm(x, ffnNorm[li])
+    hidden  = silu(W_gate × x_norm2) ⊙ (W_up × x_norm2)   (SwiGLU)
+    x       = x + W_down × hidden          (residual)
+
+  GQA: q-heads grouped as numHeads/numKvHeads per KV head. For TinyLlama
+  that is 32Q / 4KV = 8 query heads sharing each K/V pair.
+
+  RoPE: complex-number rotation applied independently per head pair:
+    freq_i  = 1 / ropeTheta^(2i/headDim)
+    angle   = pos × freq_i
+    (x_i, x_{i+headDim/2}) → (x_i·cos - x_{i+headDim/2}·sin,
+                               x_i·sin + x_{i+headDim/2}·cos)
+
+  KV cache: HashMap<requestId, float[layers][MAX_SEQ_LEN × kvDim]>
+  Scoped per node — each node stores only its own layer range.
+  MAX_SEQ_LEN = 2048. Production: integrate with KVCacheManager (eviction, GPU tier).
+
+  Prefill fast-path:
+    When hasEmbeddings=true AND startPosition=0 AND tokenIds.length > 1:
+    Loops all prompt tokens through runLayers(), populating the KV cache,
+    returns only the last token's activations.
+
+  GpuForwardPassHandler upgrade path:
+    Override matVec() with cublasSgemv (or cublasSgemm for batched decode).
+    All other methods (rmsNorm, rope, gqa, ffn, softmax) stay identical.
+    The only thing that changes is where the matrix multiply runs.
+
+15.4  GgufTokenizer
+-----------------------------------------------
+SentencePiece BPE tokenizer that reads its entire vocabulary from GGUF
+metadata. No separate tokenizer.model file required — everything is in the
+.gguf already.
+
+  GGUF metadata keys read:
+    tokenizer.ggml.tokens       String[]  vocab pieces (▁ = space prefix)
+    tokenizer.ggml.scores       float[]   BPE merge scores (higher = preferred)
+    tokenizer.ggml.token_type   int[]     1=normal 2=unknown 3=control 6=byte
+    tokenizer.ggml.bos_token_id
+    tokenizer.ggml.eos_token_id
+
+  Encoding algorithm (SentencePiece BPE greedy merge):
+    1. Normalise: replace spaces with ▁ (U+2581), prepend ▁ to whole string
+    2. Initialise symbol list: one entry per UTF-8 code point
+       OOV characters → byte fallback tokens <0xHH>
+    3. Greedily merge adjacent pair with highest score until no merges remain
+    4. Prepend BOS token
+
+  Decoding: replace ▁ with space, strip leading space.
+  Special tokens (BOS, EOS, type=3 control) decode to empty string.
+  Byte tokens <0xHH> decode to their single byte, interpreted as UTF-8.
+
+  Located in: integration/src/test/java/io/hyperstack4j/integration/
+  (integration module has both tokenizer and node on its classpath)
+
+15.5  Prefill / Decode split in GenerationLoop
+-----------------------------------------------
+Before session 4, GenerationLoop sent the full prompt token array at every
+step with startPos=0. This broke downstream nodes: they received one
+activation blob per request but their KV caches were never filled for
+prompt positions 0..N-2, causing attention to produce garbage.
+
+Fixed approach (matches standard LLM inference practice):
+
+  Prefill phase (once per request, before decode loop):
+    for p in 0 .. promptIds.length - 2:
+        pipeline.forward(requestId, [promptIds[p]], p)
+        ← each node fills kCache/vCache at position p
+    startPos = promptIds.length - 1
+    allTokens = [promptIds[last]]
+
+  Decode phase (maxTokens iterations):
+    logits = pipeline.forward(requestId, [currentToken], startPos + step)
+    nextToken = sampler.sample(logits, params, history)
+    stream nextToken to client
+    currentToken = nextToken
+
+  Node-1 also has an internal prefill fast-path (CpuForwardPassHandler):
+  when it receives all prompt tokens at once (startPosition=0, len>1),
+  it loops them internally. This is a redundant safety net — the loop
+  in GenerationLoop is authoritative.
+
+15.6  Token ID transport: first-node protocol
+-----------------------------------------------
+The activation field in the ForwardRequest proto carries two different
+payload types depending on which node receives it:
+
+  Node 1 (hasEmbeddings=true):  packed int32 token IDs
+    ProcessPipelineClient.intsToBytes(int[]) → ByteBuffer.putInt per ID
+    EmbeddedNodeServer reads: ByteBuffer.wrap(rawBytes).getInt() per slot
+    → ForwardRequest.withTokens(requestId, tokenIds, startPos)
+
+  Nodes 2+ (hasEmbeddings=false):  float activations
+    ProcessPipelineClient: ActivationCodec.encode(floats, dtype) → bytes
+    EmbeddedNodeServer reads: ActivationCodec.decode(bytes, inDtype) → floats
+    → ForwardRequest.withActivations(requestId, floats, startPos)
+
+  The switch is gated on context.hasEmbeddings() in EmbeddedNodeServer.
+  No proto field change required — the same activation bytes field is reused.r

@@ -17,7 +17,7 @@ import io.hyperstack4j.node.InferencePipeline;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.StubTokenizer;
+import io.hyperstack4j.tokenizer.SimpleTokenizer;
 
 class RequestSchedulerTest {
 
@@ -26,9 +26,9 @@ class RequestSchedulerTest {
     @BeforeEach
     void setUp() {
         var loop = new GenerationLoop(
-                new StubTokenizer(),
+                new SimpleTokenizer(),
                 Sampler.create(),
-                new StubInferencePipeline(),
+                new SequenceInferencePipeline(),
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000))
         );
         scheduler = new RequestScheduler(10, loop);
@@ -64,7 +64,7 @@ class RequestSchedulerTest {
     void throws_queue_full_exception_when_saturated() {
         // Fill a tiny scheduler
         var tinyLoop = new GenerationLoop(
-                new StubTokenizer(), Sampler.create(),
+                new SimpleTokenizer(), Sampler.create(),
                 // slow pipeline — blocks long enough to fill queue
                 new InferencePipeline() {
                     @Override public float[] forward(String requestId, int[] tokens, int startPos) {

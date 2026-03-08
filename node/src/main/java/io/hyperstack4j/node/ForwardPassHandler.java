@@ -4,7 +4,7 @@ package io.hyperstack4j.node;
  * Executes the transformer forward pass for this node's assigned layers.
  *
  * Implementations:
- *   StubForwardPassHandler   — deterministic fake, used in tests + integration tests
+ *   CyclicForwardPassHandler   — deterministic fake, used in tests + integration tests
  *   GpuForwardPassHandler    — real JCuda/JCublas implementation (GPU required)
  *
  * Thread-safe — may be called concurrently for different requests in a batch.

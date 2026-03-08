@@ -26,7 +26,7 @@ import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.StubTokenizer;
+import io.hyperstack4j.tokenizer.SimpleTokenizer;
 
 /**
  * Full multi-JVM 3-node cluster integration test.
@@ -60,7 +60,7 @@ class ThreeNodeClusterIT {
         pipeline = harness.pipelineClient();
 
         generationLoop = new GenerationLoop(
-                new StubTokenizer(),
+                new SimpleTokenizer(),
                 Sampler.create(),
                 pipeline,
                 new KVCacheManager(
@@ -94,14 +94,8 @@ class ThreeNodeClusterIT {
 
         assertThat(logits).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
 
-        // StubForwardPassHandler picks winner = STUB_FIRST + (startPos % 7).
-        // This call uses startPos=0, so winner is always STUB_FIRST (3).
-        float max = Float.NEGATIVE_INFINITY;
-        int maxIdx = -1;
-        for (int i = 0; i < logits.length; i++) {
-            if (logits[i] > max) { max = logits[i]; maxIdx = i; }
-        }
-        assertThat(maxIdx).isBetween(3, 9); // must be a pre-registered stub word
+        // CyclicForwardPassHandler puts 100.0f at token 42
+        float max = logits[42];
         for (float l : logits) assertThat(max).isGreaterThanOrEqualTo(l);
     }
 
@@ -265,7 +259,7 @@ class ThreeNodeClusterIT {
         );
         try {
             GenerationLoop f16Loop = new GenerationLoop(
-                    new StubTokenizer(),
+                    new SimpleTokenizer(),
                     Sampler.create(),
                     f16Pipeline,
                     new KVCacheManager(

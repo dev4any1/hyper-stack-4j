@@ -8,6 +8,25 @@ Run large language models across a network of **affordable commodity GPUs** — 
 
 **16 × 4GB GPUs = 64GB total VRAM at a fraction of the cost.**
 
+## Status
+
+The full inference stack is working end-to-end with real models:
+
+```
+MODEL_PATH=/models/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf ./run-me.sh cluster
+
+  hyper-stack-4j  ·  3-node cluster  ·  interactive console
+
+✔ Cluster ready  (FLOAT32 activations)
+✔ Tokenizer loaded from GGUF  (vocabSize=32000)
+
+you> what is the capital of France?
+bot> The capital of France is Paris...
+     [42 tokens · 8310 ms · FLOAT32]
+```
+
+Three real JVM processes, real gRPC, real transformer math — no Ollama, no Python bridge, no external runtime.
+
 ## Architecture
 
 ```
@@ -18,13 +37,13 @@ Run large language models across a network of **affordable commodity GPUs** — 
 [Coordinator 1]         [Coordinator 2]
    LEADER                  STANDBY
     │
-    ├── Tokenizer (DJL SentencePiece)
-    ├── Scheduler (CompletableFuture, virtual threads)
-    ├── Sampler (pure Java)
-    ├── PrefixCache (Trie)
+    ├── GgufTokenizer  (vocab loaded directly from GGUF metadata)
+    ├── Scheduler      (CompletableFuture, virtual threads)
+    ├── Sampler        (pure Java — temperature, top-k, top-p, rep. penalty)
+    ├── PrefixCache    (Trie)
     └── InferencePipeline
               │
-              │  gRPC       (data plane  — activations)
+              │  gRPC       (data plane  — activations, FLOAT32/16/INT8)
               │  Hazelcast  (control plane — state, events)
               │
     =============================================
@@ -32,31 +51,118 @@ Run large language models across a network of **affordable commodity GPUs** — 
     =============================================
          |          |          |          |
     [Node 1]   [Node 2]   [Node 3]  ... [Node 16]
-    Layer 0-1  Layer 2-3  Layer 4-5     Layer N
-    + Embed    GPU shard  GPU shard     + Output proj
+    Layer 0-7  Layer 8-14 Layer 15-21   Layer N
+    + Embed    CpuFPH     CpuFPH        + Output proj
+    CpuFPH                              GpuFPH (planned)
 ```
+
+`CpuFPH` = `CpuForwardPassHandler` — real transformer math, pure Java.  
+`GpuFPH` = `GpuForwardPassHandler` — same interface, JCuda/JCublas (in progress).
+
+## Real Inference Pipeline
+
+### GGUF model loading
+
+`GgufReader` parses GGUF v2/v3 binary files directly — no external tools, no Python, no llama.cpp subprocess. Supported quantisation types:
+
+| Type | Bits/weight | Notes |
+|------|------------|-------|
+| `F32` | 32 | Lossless |
+| `F16` | 16 | IEEE 754 half-precision |
+| `BF16` | 16 | bfloat16 |
+| `Q8_0` | 8 | Symmetric, block-32 |
+| `Q4_0` | 4 | Symmetric, block-32 |
+| `Q4_K` | 4 | Per-superblock scale+min, block-256 — used by `Q4_K_M` files |
+| `Q6_K` | 6 | Per-superblock scale, block-256 |
+
+`LlamaConfig` extracts model hyperparameters (`hiddenDim`, `numLayers`, `numHeads`, `numKvHeads`, `ropeTheta`, etc.) from GGUF metadata. Works for LLaMA 2/3, TinyLlama, Mistral, Gemma.
+
+### CPU transformer (CpuForwardPassHandler)
+
+Full LLaMA-family transformer forward pass in pure Java. Each node runs only its assigned layer shard:
+
+```
+ShardContext:  startLayer=0  endLayer=8  hasEmbeddings=true
+  →  embedding lookup (token_embd.weight)
+  →  layers 0–7: RMS norm → Q/K/V projection → RoPE → GQA attention → SwiGLU FFN
+  →  return activations to next node via gRPC
+
+ShardContext:  startLayer=15  endLayer=22  hasOutputProjection=true
+  →  layers 15–21: same
+  →  output RMS norm → output projection → return float[vocabSize] logits
+```
+
+Math primitives: RMS normalisation, matrix–vector multiply, rotary position embeddings (RoPE), grouped-query attention (GQA) with in-process KV cache, SwiGLU FFN, softmax. All pure Java. `GpuForwardPassHandler` will override `matVec` with a JCublas call; everything above stays identical.
+
+**Prefill and decode:**
+
+```
+Prefill (prompt, N tokens):
+  GenerationLoop: for p in 0..N-1: pipeline.forward(id, [tok_p], p)
+  Every node's KV cache fills for positions 0..N-1
+
+Decode (each new token):
+  pipeline.forward(id, [lastToken], N + step)
+  Last node returns logits → sampler → next token → stream to client
+```
+
+### Tokenizer (GgufTokenizer)
+
+SentencePiece BPE tokenizer loaded directly from GGUF metadata — no separate `tokenizer.model` file needed. Reads `tokenizer.ggml.tokens`, `.scores`, and `.token_type` arrays from the same `.gguf` file as the weights. Handles byte fallback tokens (`<0xHH>`) for out-of-vocabulary characters.
+
+## Quick Start
+
+### Try it now (CPU, no GPU required)
+
+```bash
+# Download TinyLlama — 637 MB, runs on any modern CPU
+wget https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+
+# Build
+mvn clean install -T 1C -DskipTests
+
+# Run
+MODEL_PATH=/path/to/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf ./run-me.sh cluster
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODEL_PATH` | _(none)_ | Path to a GGUF file. When set, loads real weights and tokenizer. When unset, uses stubs (useful for testing cluster plumbing). |
+| `DTYPE` | `FLOAT32` | Activation compression between nodes: `FLOAT32`, `FLOAT16`, or `INT8` |
+| `MAX_TOKENS` | `200` | Max tokens per response |
+| `TEMPERATURE` | `0.7` | Sampling temperature |
+| `HYPER_VERBOSE` | _(unset)_ | Set to `true` to show gRPC/node logs |
+
+### Larger models
+
+Any GGUF file with a LLaMA-compatible architecture works:
+
+| Model | Size | RAM needed |
+|-------|------|------------|
+| `TinyLlama-1.1B-Chat.Q4_K_M.gguf` | 637 MB | ~2 GB |
+| `Mistral-7B-Instruct-v0.2.Q4_K_M.gguf` | 4.1 GB | ~6 GB |
+| `Llama-3.2-8B-Instruct.Q4_K_M.gguf` | 4.9 GB | ~8 GB |
+| `Llama-3.1-70B-Instruct.Q4_K_M.gguf` | 40 GB | 16 × 4GB nodes |
 
 ## Modules
 
 | Module | Responsibility |
 |--------|---------------|
-| `api` | OpenAPI 3.0 spec + generated JAX-RS interfaces + models. gRPC proto (`inference.proto`) for internal node communication, including `ActivationDtype` enum |
-| `registry` | Model Registry + Shard Planner (Hazelcast IMap, GGUF via DJL, IMQ seed scoring) |
-| `coordinator` | Coordinator + Scheduler (reactive `CompletableFuture`, Hazelcast CP leader election, Javalin REST) |
-| `node` | Inference Node — runs on each GPU machine (JCuda, JCublas, gRPC server). `ActivationDtype` + `ActivationCodec` — pure-Java compression at the gRPC boundary |
-| `kvcache` | KV Cache Manager — GPU tier (JCuda) + JVM heap tier (Caffeine). Prefix Trie for shared prompts |
-| `tokenizer` | Tokenizer (DJL SentencePiece, chat template formatter) |
-| `sampler` | Sampler — pure Java, zero deps (temperature, top-k, top-p, repetition penalty) |
-| `health` | Health Monitor (Hazelcast membership events, JCuda GPU probes, Resilience4j circuit breakers) |
-| `integration` | Multi-JVM cluster integration tests — forks real node processes, exercises full gRPC pipeline including FLOAT16/INT8 compression |
+| `api` | OpenAPI 3.0 spec + JAX-RS interfaces + gRPC proto (`inference.proto`), including `ActivationDtype` |
+| `registry` | Model Registry + Shard Planner (Hazelcast IMap, GGUF metadata, IMQ seed scoring) |
+| `coordinator` | `GenerationLoop` (prefill + decode), `RequestScheduler`, Javalin REST, SSE streaming, batch dispatch, `FaultTolerantPipeline` |
+| `node` | `CpuForwardPassHandler`, `GgufReader`, `LlamaConfig`, `StubForwardPassHandler`, `ActivationCodec` |
+| `kvcache` | KV Cache Manager — GPU tier (JCuda) + JVM heap tier (Caffeine). Prefix Trie |
+| `tokenizer` | `GgufTokenizer` (SentencePiece BPE from GGUF), `DJLTokenizer`, `StubTokenizer`, chat templates |
+| `sampler` | Pure Java sampler — temperature, top-k, top-p, repetition penalty |
+| `health` | Health Monitor (Hazelcast events, JCuda GPU probes, Resilience4j circuit breakers) |
+| `integration` | Multi-JVM cluster tests + `ConsoleMain` REPL. `GgufTokenizer`, `EmbeddedNodeServer`, `ClusterHarness` |
 
 ## Activation Compression
 
-Activation tensors shipped between nodes are the primary network bottleneck.
-At 70B scale (hidden_dim=8192, seq_len=4096) each hop costs ~64 MB over 10GbE.
-
-`ProcessPipelineClient` accepts an `ActivationDtype` to compress activations
-before each gRPC send and decompress after each receive:
+Activation tensors between nodes are the primary network bottleneck. At 70B scale each hop costs ~64 MB over 10GbE.
 
 | Dtype | Size/element | Relative error | Transfer (70B, 10GbE) |
 |-------|-------------|---------------|-----------------------|
@@ -65,228 +171,97 @@ before each gRPC send and decompress after each receive:
 | `INT8`    | 1 B + 4 B scale | ~1% | ~13 ms/hop |
 
 ```java
-// Default — no compression
-ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize);
-
-// FLOAT16 — recommended for LAN clusters
 ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize, ActivationDtype.FLOAT16);
-
-// INT8 — for bandwidth-constrained community nodes
-ProcessPipelineClient pipeline = new ProcessPipelineClient(nodes, vocabSize, ActivationDtype.INT8);
 ```
 
-The dtype is encoded in each `ForwardRequest` proto message (`dtype` field 9)
-so each node always knows how to decode its input. Final-node logits are always
-returned as `FLOAT32` — no precision loss on the vocabulary distribution.
-
-`ActivationCodec` is pure Java (no JNI, no external deps). FLOAT16 uses manual
-IEEE 754 half-precision bit manipulation; INT8 uses symmetric quantisation with a
-float32 scale prefix (`max(|activations|) / 127`).
+`ActivationCodec` is pure Java. FLOAT16 uses manual IEEE 754 bit manipulation; INT8 uses symmetric quantisation with a float32 scale prefix.
 
 ## Scheduler — Reactive Design
 
-`RequestScheduler` dispatches every request on its own Java 21 Virtual Thread and exposes a fully reactive API via `CompletableFuture`.
-
 ```java
-// Streaming — returns immediately, tokens delivered via TokenConsumer callback
+// Streaming — returns immediately, tokens delivered via callback
 CompletableFuture<GenerationResult> future = scheduler.submit(request, consumer);
 
-// Blocking — caller waits only on its own future, never on other requests
+// Blocking — caller waits only on its own future
 GenerationResult result = scheduler.submitAndWait(request);
 ```
 
-**How `submitAndWait` works:**
-
-```
-1.  CompletableFuture<GenerationResult> created and registered in ConcurrentHashMap
-2.  request.offer()'d into PriorityBlockingQueue                    (HIGH priority first)
-3.  Virtual thread spawned — runs generate(), calls future.complete(result) on finish
-4.  Caller blocks on future.join() — wakes up exactly when its own request is done
-```
-
-N concurrent callers each block on **independent futures** — there is no shared lock or sequential bottleneck between requests. Exceptions surface via `future.completeExceptionally(e)` rather than being silently swallowed.
-
-When the queue is full, `submit()` throws `QueueFullException` (with a `retryAfterSeconds` hint), which the REST layer translates to **HTTP 503 + Retry-After**.
+N concurrent callers block on **independent futures** — no shared lock between requests. Queue full → `QueueFullException` → HTTP 503 + Retry-After.
 
 ## Shard Planner — Fair Layer Distribution
-
-`ShardPlanner` guarantees every eligible node receives **at least one layer**, regardless of VRAM headroom. When assigning layers to a node, the planner caps its allocation to leave at least one layer for each remaining node:
 
 ```
 maxLayers = min(layersFit, remainingLayers − (remainingNodes − 1))
 ```
 
-This prevents a large-VRAM node from consuming all remaining layers and leaving later nodes empty-handed.
+Every eligible node is guaranteed at least one layer, regardless of VRAM headroom.
 
 ## API
 
-The coordinator exposes a REST API (OpenAPI 3.0 spec at `api/src/main/resources/openapi.yaml`), implemented by `InferenceApiServer` (Javalin 6):
+REST (Javalin 6, OpenAPI 3.0):
 
 ```
 POST   /v1/inference          — blocking inference
 POST   /v1/inference/stream   — SSE token streaming
-POST   /v1/models             — load model into cluster
-GET    /v1/models             — list loaded models
+POST   /v1/models             — load model
 GET    /v1/models/{modelId}   — model status + shard map
 DELETE /v1/models/{modelId}   — unload model
-GET    /v1/cluster/health     — cluster health overview
-GET    /v1/cluster/nodes      — all node statuses
+GET    /v1/cluster/health     — cluster health
 GET    /v1/cluster/shardmap   — current layer assignments
 ```
 
-**Streaming pipeline — how it works end to end:**
+## Build & Test
 
+```bash
+# Build
+mvn clean install -T 1C
+
+# Unit tests
+mvn test
+
+# Integration tests (forks 3 real JVM node processes)
+mvn verify -pl integration
+
+# Skip ITs
+mvn verify -DskipITs
 ```
-Client → POST /v1/inference/stream
-         ↓
-InferenceApiServer parses body, sets SSE headers
-         ↓
-scheduler.submit(request, SseTokenConsumer)  ← returns CompletableFuture
-         ↓
-Generation virtual thread: GenerationLoop.generate()
-   each token → TokenConsumer.onToken(piece, tokenId, position)
-              → SseTokenConsumer writes:  data: {"token":"Hello","tokenId":9906,"isComplete":false}
-              → flushed to HTTP response immediately
-         ↓
-Generation complete → consumer.sendComplete("stop")
-                    → data: {"token":"","tokenId":0,"isComplete":true,"finishReason":"stop"}
-         ↓
-Client reads the SSE stream token by token
-```
-
-`SseTokenConsumer` is decoupled from Javalin via a `SseEmitter` functional interface — in production it wraps `writer::write`; in tests it wraps `list::add`.
-
-**Error codes:**
-
-| Status | Meaning |
-|--------|---------|
-| 400 | Missing or empty messages |
-| 404 | Model not found |
-| 429 | Scheduler queue full (`QueueFullException`) |
-| 503 | Model not loaded / cluster unavailable |
-| 500 | Unexpected inference error |
-
-Internal node-to-node communication uses gRPC (`InferenceService`, `NodeService`, `RegistryService`).
-
-## KV Cache
-
-Two tiers, RAM only — no disk IO:
-
-```
-Tier 1  GPU VRAM     JCuda CudaBuffer   — hot active sequences
-Tier 2  JVM heap     Caffeine           — warm sequences, bounded by -Xmx
-```
-
-Caffeine uses W-TinyLFU eviction. Size is configured via `kv-cache.cpu.max-bytes` in `cluster-config.yaml`.
-Prefix caching via a Trie structure — shared system prompts computed once and reused across requests.
 
 ## Requirements
 
 - **JDK 21+**
 - **Maven 3.9+**
-- **CUDA 12.x** (on GPU nodes)
-- **10GbE networking** recommended
-
-## Build
-
-```bash
-mvn clean install -T 1C
-```
-
-## Testing
-
-The project has two test layers:
-
-**Unit / module tests** — run on every build, no network:
-```bash
-mvn test
-```
-
-**Integration tests** — `maven-failsafe-plugin`, enabled with `mvn verify`:
-```bash
-# Full suite — forks 3 real JVM node processes, exercises live gRPC pipeline
-mvn verify -pl integration
-
-# In-process only (fast, zero network, uses LocalInferencePipeline)
-mvn verify -pl integration -Dit.test=InProcessClusterIT
-
-# Skip ITs entirely
-mvn verify -DskipITs
-```
-
-**Integration test architecture** (`integration` module):
-
-```
-ThreeNodeClusterIT
-  └── ClusterHarness.start()
-        ├── ProcessBuilder → NodeMain JVM #1  (port 19092, -Xmx4g -XX:+UseZGC)
-        ├── ProcessBuilder → NodeMain JVM #2  (port 19093, -Xmx4g -XX:+UseZGC)
-        └── ProcessBuilder → NodeMain JVM #3  (port 19094, -Xmx4g -XX:+UseZGC)
-  └── ProcessPipelineClient  (gRPC channels to all 3 nodes)
-  └── GenerationLoop + RequestScheduler  (coordinator JVM, -Xmx2g)
-```
-
-Memory budget for a 16 GB host: 3 × 4 GB nodes + 2 GB coordinator + 2 GB OS = 16 GB.
-
-**Recommended stub model for local testing:** `TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf` (~670 MB), split 8/7/7 layers across 3 nodes.
-
-## Run
-
-```bash
-# Start coordinator
-java --enable-preview -jar coordinator/target/coordinator.jar \
-     --config cluster-config.yaml
-
-# Start inference node (on each GPU machine)
-java --enable-preview -jar node/target/node.jar \
-     --config cluster-config.yaml \
-     --device-id=0
-
-# Load a model
-curl -X POST http://coordinator:8080/v1/models \
-     -H 'Content-Type: application/json' \
-     -d '{"modelId": "llama3-8b", "path": "/models/llama3-8b.Q4_K_M.gguf", "architecture": "llama3"}'
-
-# Chat — REST streaming (SSE)
-curl -X POST http://coordinator:8080/v1/inference/stream \
-     -H 'Content-Type: application/json' \
-     -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
-
-# Chat — gRPC streaming
-grpcurl -d '{"messages": [{"role": "user", "content": "Hello!"}]}' \
-        coordinator:9090 io.hyperstack4j.api.grpc.InferenceService/InferStream
-```
+- **CUDA 12.x** (GPU nodes only — not needed for CPU mode)
+- **10GbE networking** recommended for multi-machine clusters
 
 ## Technology Stack
 
 | Concern | Technology |
-|---------|-----------| 
+|---------|-----------|
 | Language | Java 21 |
 | Build | Maven (multi-module) |
 | GPU compute | JCuda / JCublas 12.x |
 | Distributed state | Hazelcast 5.x |
 | Leader election | Hazelcast CP FencedLock |
-| Internal data plane | gRPC + Protocol Buffers |
-| REST API server | Javalin 6.x (lightweight, ~1MB, no framework) |
-| REST API spec | OpenAPI 3.0 — jaxrs-spec generator |
+| Data plane | gRPC + Protocol Buffers |
+| REST | Javalin 6.x |
 | Concurrency | Java 21 Virtual Threads + `CompletableFuture` |
 | KV Cache L1 | JCuda CudaBuffer (GPU VRAM) |
-| KV Cache L2 | Caffeine (JVM heap, W-TinyLFU, bounded by Xmx) |
+| KV Cache L2 | Caffeine (JVM heap, W-TinyLFU) |
 | Circuit breaker | Resilience4j |
-| Metrics | Micrometer + Prometheus (exposed via JDK HttpServer) |
-| Tokenizer | DJL SpTokenizer (SentencePiece JNI) |
-| Weight format | GGUF |
-| Sampler | Pure Java, zero external deps |
+| Metrics | Micrometer + Prometheus |
+| Tokenizer | `GgufTokenizer` (built-in SentencePiece BPE), `DJLTokenizer` (JNI) |
+| Weight format | GGUF v2/v3 |
+| Sampler | Pure Java |
 
 ## Notable Design Decisions
 
-- **No Spring Boot** — too heavy. Javalin for REST, JDK HttpServer for metrics scrape endpoint.
-- **No disk KV cache** — all cache in RAM (GPU VRAM + JVM heap). Caffeine evicts cleanly when Xmx is reached.
-- **No OHC / Ehcache / Chronicle Map** — all carry dead transitive dependencies (NetBeans repo). Caffeine is sufficient.
+- **No Python.** No Ollama. No llama.cpp subprocess. The JVM reads the GGUF binary directly and runs the transformer end to end.
+- **No Spring Boot** — Javalin for REST, JDK HttpServer for metrics scrape.
+- **No disk KV cache** — all cache in RAM. Caffeine evicts cleanly when `-Xmx` is reached.
 - **Pipeline parallelism** over tensor parallelism — LAN-friendly, no InfiniBand required.
 - **Separate data plane (gRPC) from control plane (Hazelcast)** — mirrors Kafka/Kubernetes design.
-- **Reactive scheduler** — `submit()` returns `CompletableFuture<GenerationResult>`. N concurrent callers are fully independent; no sequential bottleneck between requests.
-- **Fair shard planning** — `ShardPlanner` caps each node's layer allocation to guarantee every eligible node participates, preventing VRAM-rich nodes from monopolising the pipeline.
+- **GGUF tokenizer from metadata** — vocab, scores, and special token IDs are all in the `.gguf` file. No separate `tokenizer.model` needed.
+- **Stub mode** — without `MODEL_PATH`, the cluster boots in seconds and all 15 integration tests run without any model file.
 
 ## License
 

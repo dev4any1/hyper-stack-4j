@@ -23,17 +23,17 @@ import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ActivationCodec;
 import io.hyperstack4j.node.CpuForwardPassHandler;
+import io.hyperstack4j.node.CyclicForwardPassHandler;
 import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.ForwardResult;
 import io.hyperstack4j.node.ShardContext;
-import io.hyperstack4j.node.StubForwardPassHandler;
 import io.hyperstack4j.registry.ShardAssignment;
 
 /**
- * Minimal gRPC NodeService backed by StubForwardPassHandler.
+ * Minimal gRPC NodeService backed by CyclicForwardPassHandler.
  *
  * Used by ThreeNodeClusterIT — each node JVM runs one of these.
- * No GPU, no real weights — deterministic stub responses only.
+ * No GPU, no real weights — deterministic cyclic responses only.
  *
  * Activation compression:
  *   Each ForwardRequest carries a dtype field that tells this node how to decode
@@ -48,7 +48,7 @@ public final class EmbeddedNodeServer {
     private final int    port;
     private final Server grpcServer;
 
-    // TinyLlama-1.1B shape constants (used when no model file is supplied)
+    // TinyLlama-1.1B shape constants
     static final int VOCAB_SIZE   = 32_000;
     static final int HIDDEN_DIM   = 2_048;
     static final int NUM_HEADS    = 32;
@@ -102,7 +102,7 @@ public final class EmbeddedNodeServer {
         NodeServiceImpl(String nodeId, String modelPath) {
             this.nodeId    = nodeId;
             this.modelPath = modelPath;
-            this.handler   = new StubForwardPassHandler(); // replaced in loadShard() when real model
+            this.handler   = new CyclicForwardPassHandler(); // replaced in loadShard() when real model
             this.context   = buildDefaultContext();
             this.kvCache   = new KVCacheManager(
                     new GpuKVCache(NODE_VRAM_BUDGET),
@@ -184,12 +184,12 @@ public final class EmbeddedNodeServer {
                     log.severe("FAILED to load real model: " + e.getMessage());
                     e.printStackTrace();  // <-- Print full stack trace
                     log.warning("Falling back to stub handler");
-                    handler = new StubForwardPassHandler();
+                    handler = new CyclicForwardPassHandler();
                     msg = "Stub shard (model load failed: " + e.getMessage() + ") layers "
                             + request.getStartLayer() + "–" + request.getEndLayer();
                 }
             } else {
-                handler = new StubForwardPassHandler();
+                handler = new CyclicForwardPassHandler();
                 msg = "Stub shard loaded layers "
                         + request.getStartLayer() + "–" + request.getEndLayer();
             }

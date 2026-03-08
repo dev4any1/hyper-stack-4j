@@ -5,13 +5,13 @@ import java.util.concurrent.atomic.AtomicInteger;
 import io.hyperstack4j.node.InferencePipeline;
 
 /**
- * Test double for InferencePipeline.
+ * Test helper for InferencePipeline.
  *
  * Returns a fixed logit distribution on each forward() call.
  * By default puts all probability mass on token index 42 (arbitrary non-special token).
  * Configurable to return a specific "winner" token, or to cycle through a sequence.
  */
-final class StubInferencePipeline implements InferencePipeline {
+final class SequenceInferencePipeline implements InferencePipeline {
 
     static final int  VOCAB_SIZE    = 1000;
     static final int  DEFAULT_TOKEN = 42;
@@ -20,12 +20,12 @@ final class StubInferencePipeline implements InferencePipeline {
     private final AtomicInteger callCount = new AtomicInteger(0);
 
     /** Always returns logits pointing at DEFAULT_TOKEN. */
-    StubInferencePipeline() {
+    SequenceInferencePipeline() {
         this.tokenSequence = null;
     }
 
     /** Cycles through the given token sequence, then returns DEFAULT_TOKEN. */
-    StubInferencePipeline(int... tokenSequence) {
+    SequenceInferencePipeline(int... tokenSequence) {
         this.tokenSequence = tokenSequence;
     }
 
