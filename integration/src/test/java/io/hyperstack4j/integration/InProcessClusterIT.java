@@ -31,7 +31,7 @@ import io.hyperstack4j.registry.ShardPlanner;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.SimpleTokenizer;
+import io.hyperstack4j.tokenizer.StubTokenizer;
 
 /**
  * In-process 3-node integration test.
@@ -49,7 +49,7 @@ class InProcessClusterIT {
     private static final int HIDDEN_DIM   = 2_048;
     private static final int NUM_HEADS    = 32;
     private static final int TOTAL_LAYERS = 22;
-    private static final int CYCLIC_WINNER  = 42; // CyclicForwardPassHandler puts 100.0f here
+    private static final int STUB_WINNER  = 42; // CyclicForwardPassHandler puts 100.0f here
 
     private LocalInferencePipeline pipeline;
     private GenerationLoop         generationLoop;
@@ -73,14 +73,14 @@ class InProcessClusterIT {
         List<ForwardPassHandler> handlers = List.of(
                 new CyclicForwardPassHandler(),
                 new CyclicForwardPassHandler(),
-                new CyclicForwardPassHandler(CYCLIC_WINNER)   // last node → logits
+                new CyclicForwardPassHandler(STUB_WINNER)   // last node → logits
         );
 
         pipeline = LocalInferencePipeline.from(shardMap, handlers, VOCAB_SIZE, HIDDEN_DIM, NUM_HEADS);
 
         // ── 3. Wire coordinator components ────────────────────────────────────
         generationLoop = new GenerationLoop(
-                new SimpleTokenizer(),
+                new StubTokenizer(),
                 Sampler.create(),
                 pipeline,
                 new KVCacheManager(
@@ -104,7 +104,7 @@ class InProcessClusterIT {
     void singleForwardPassReturnsLogits() {
         float[] logits = pipeline.forward("req-001", new int[]{1, 2, 3}, 0);
         assertThat(logits).hasSize(VOCAB_SIZE);
-        assertThat(logits[CYCLIC_WINNER]).isGreaterThan(logits[0]);
+        assertThat(logits[STUB_WINNER]).isGreaterThan(logits[0]);
     }
 
     @Test

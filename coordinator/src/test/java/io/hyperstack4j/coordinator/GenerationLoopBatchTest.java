@@ -16,20 +16,20 @@ import io.hyperstack4j.node.InferencePipeline;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.SimpleTokenizer;
+import io.hyperstack4j.tokenizer.StubTokenizer;
 
 class GenerationLoopBatchTest {
 
     private GenerationLoop loop;
-    private SimpleTokenizer  tokenizer;
+    private StubTokenizer  tokenizer;
 
     @BeforeEach
     void setUp() {
-        tokenizer = new SimpleTokenizer();
+        tokenizer = new StubTokenizer();
         loop = new GenerationLoop(
                 tokenizer,
                 Sampler.create(),
-                new SequenceInferencePipeline(),
+                new StubInferencePipeline(),
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000))
         );
     }
@@ -58,7 +58,7 @@ class GenerationLoopBatchTest {
         // Fresh loop for batch (same pipeline, same tokenizer)
         GenerationLoop batchLoop = new GenerationLoop(
                 tokenizer, Sampler.create(),
-                new SequenceInferencePipeline(),
+                new StubInferencePipeline(),
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000))
         );
         List<GenerationResult> batchResults = batchLoop.generateBatch(

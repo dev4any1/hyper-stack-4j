@@ -16,7 +16,7 @@ import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.node.InferencePipeline;
 import io.hyperstack4j.sampler.Sampler;
-import io.hyperstack4j.tokenizer.SimpleTokenizer;
+import io.hyperstack4j.tokenizer.StubTokenizer;
 
 class HealthReactorTest {
 
@@ -139,7 +139,7 @@ class HealthReactorTest {
     @Test
     void scheduler_shutdown_called_when_fully_unavailable() {
         GenerationLoop loop = new GenerationLoop(
-                new SimpleTokenizer(),
+                new StubTokenizer(),
                 Sampler.create(),
                 pipeline,
                 new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000)));

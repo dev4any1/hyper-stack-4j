@@ -17,7 +17,7 @@
         Full-cluster integration tests.
 
         Two test flavours:
-          InProcessClusterIT   — 3 StubForwardPassHandlers chained via LocalInferencePipeline,
+          InProcessClusterIT   — 3 CyclicForwardPassHandlers chained via LocalInferencePipeline,
                                  single JVM, zero network, fast feedback loop.
           ThreeNodeClusterIT   — 3 real JVM node processes launched via ProcessBuilder,
                                  each on a separate gRPC port, connected by a
@@ -124,7 +124,7 @@
                     <systemPropertyVariables>
                         <!--
                             Point at a local GGUF for real-model tests.
-                            When unset, all tests fall back to StubForwardPassHandler.
+                            When unset, all tests fall back to CyclicForwardPassHandler.
                         -->
                         <it.model.path>${it.model.path}</it.model.path>
                         <!-- Failsafe timeout per test class (ms) -->

@@ -5,13 +5,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tests SimpleTokenizer AND validates the Tokenizer contract.
- * Since DJLTokenizer requires a model file, SimpleTokenizer is our test vehicle
+ * Tests StubTokenizer AND validates the Tokenizer contract.
+ * Since DJLTokenizer requires a model file, StubTokenizer is our test vehicle
  * for anything that depends on the Tokenizer interface.
  */
-class SimpleTokenizerTest {
+class StubTokenizerTest {
 
-    private final SimpleTokenizer tokenizer = new SimpleTokenizer();
+    private final StubTokenizer tokenizer = new StubTokenizer();
 
     @Test
     void encode_returns_non_empty_ids_for_text() {

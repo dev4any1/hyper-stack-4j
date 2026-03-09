@@ -16,18 +16,18 @@ import io.hyperstack4j.node.InferencePipeline;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
-import io.hyperstack4j.tokenizer.SimpleTokenizer;
+import io.hyperstack4j.tokenizer.StubTokenizer;
 
 class GenerationLoopTest {
 
-    private SimpleTokenizer       tokenizer;
+    private StubTokenizer       tokenizer;
     private Sampler             sampler;
     private KVCacheManager      kvCache;
     private GenerationLoop      loop;
 
     @BeforeEach
     void setUp() {
-        tokenizer = new SimpleTokenizer();
+        tokenizer = new StubTokenizer();
         sampler   = Sampler.create();
         kvCache   = new KVCacheManager(
                 new GpuKVCache(64 * 1024 * 1024),
@@ -52,7 +52,7 @@ class GenerationLoopTest {
     @Test
     void generates_up_to_max_tokens() {
         // Pipeline always returns token 42 — never EOS — so loop hits maxTokens
-        SequenceInferencePipeline pipeline = new SequenceInferencePipeline();
+        StubInferencePipeline pipeline = new StubInferencePipeline();
         GenerationLoop loop = loopWith(pipeline);
 
         GenerationResult result = loop.generate(requestFor("hello"), TokenConsumer.discard());
@@ -65,7 +65,7 @@ class GenerationLoopTest {
     void stops_at_eos_token() {
         // After 3 tokens, returns EOS
         int eos = tokenizer.eosTokenId();
-        SequenceInferencePipeline pipeline = new SequenceInferencePipeline(42, 43, eos);
+        StubInferencePipeline pipeline = new StubInferencePipeline(42, 43, eos);
         GenerationLoop loop = loopWith(pipeline);
 
         InferenceRequest req = InferenceRequest.of("model",
@@ -82,7 +82,7 @@ class GenerationLoopTest {
     @Test
     void stops_at_stop_token() {
         int stopToken = 99;
-        SequenceInferencePipeline pipeline = new SequenceInferencePipeline(42, stopToken, 43);
+        StubInferencePipeline pipeline = new StubInferencePipeline(42, stopToken, 43);
         GenerationLoop loop = loopWith(pipeline);
 
         InferenceRequest req = InferenceRequest.of("model",
@@ -100,7 +100,7 @@ class GenerationLoopTest {
 
     @Test
     void token_consumer_called_once_per_generated_token() {
-        SequenceInferencePipeline pipeline = new SequenceInferencePipeline();
+        StubInferencePipeline pipeline = new StubInferencePipeline();
         GenerationLoop loop = loopWith(pipeline);
 
         List<Integer> receivedTokens = new ArrayList<>();
@@ -109,12 +109,12 @@ class GenerationLoopTest {
         loop.generate(requestFor("test"), consumer);
 
         assertThat(receivedTokens).hasSize(5); // maxTokens=5
-        assertThat(receivedTokens).allMatch(id -> id == SequenceInferencePipeline.DEFAULT_TOKEN);
+        assertThat(receivedTokens).allMatch(id -> id == StubInferencePipeline.DEFAULT_TOKEN);
     }
 
     @Test
     void result_contains_prompt_token_count() {
-        SequenceInferencePipeline pipeline = new SequenceInferencePipeline();
+        StubInferencePipeline pipeline = new StubInferencePipeline();
         GenerationLoop loop = loopWith(pipeline);
 
         GenerationResult result = loop.generate(requestFor("hello world"), TokenConsumer.discard());
@@ -124,14 +124,14 @@ class GenerationLoopTest {
 
     @Test
     void result_latency_is_positive() {
-        GenerationLoop loop = loopWith(new SequenceInferencePipeline());
+        GenerationLoop loop = loopWith(new StubInferencePipeline());
         GenerationResult result = loop.generate(requestFor("hi"), TokenConsumer.discard());
         assertThat(result.latency().toNanos()).isGreaterThan(0);
     }
 
     @Test
     void prefix_cache_populated_after_first_request() {
-        GenerationLoop loop = loopWith(new SequenceInferencePipeline());
+        GenerationLoop loop = loopWith(new StubInferencePipeline());
         InferenceRequest req = requestFor("the same system prompt");
 
         loop.generate(req, TokenConsumer.discard());

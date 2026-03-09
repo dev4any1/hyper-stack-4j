@@ -21,9 +21,14 @@
             <artifactId>api</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.hyperstack4j</groupId>
+            <artifactId>node</artifactId>
+        </dependency>
+        <dependency>
             <groupId>ai.djl</groupId>
             <artifactId>api</artifactId>
         </dependency>
+        
         <dependency>
             <groupId>ai.djl.sentencepiece</groupId>
             <artifactId>sentencepiece</artifactId>

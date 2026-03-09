@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Lightweight test helper tokenizer for unit and integration testing.
+ * Lightweight test-double tokenizer for unit and integration testing.
  *
  * Does NOT require DJL or any model file.
  * Splits text on whitespace and assigns deterministic integer IDs.
@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * NOT for production use.
  */
-public final class SimpleTokenizer implements Tokenizer {
+public final class StubTokenizer implements Tokenizer {
 
     private static final int BOS = 1;
     private static final int EOS = 2;
@@ -26,11 +26,26 @@ public final class SimpleTokenizer implements Tokenizer {
     private final Map<Integer, String> reverse = new ConcurrentHashMap<>();
     private final AtomicInteger        nextId  = new AtomicInteger(10);
 
-    public SimpleTokenizer() {
+    // IDs 3-9 are pre-registered stub response words.
+    // CyclicForwardPassHandler rotates its winner token through this range so that
+    // decoded output is always visible without depending on prompt vocabulary.
+    // nextId starts at 10, so dynamic encoding never collides with these IDs.
+    static final int STUB_WORD_FIRST = 3;
+    static final int STUB_WORD_LAST  = 9;
+
+    private static final String[] STUB_WORDS = {
+            "the", "quick", "brown", "fox", "jumps", "over", "lazy"
+    };
+
+    public StubTokenizer() {
         // pre-register special tokens
         register("<pad>", PAD);
         register("<bos>", BOS);
         register("<eos>", EOS);
+        // pre-register stub response words at fixed IDs 3-9
+        for (int i = 0; i < STUB_WORDS.length; i++) {
+            register(STUB_WORDS[i], STUB_WORD_FIRST + i);
+        }
     }
 
     private void register(String token, int id) {

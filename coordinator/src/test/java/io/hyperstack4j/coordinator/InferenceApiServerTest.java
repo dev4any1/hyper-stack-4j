@@ -31,7 +31,7 @@ import io.hyperstack4j.registry.QuantizationType;
 import io.hyperstack4j.registry.ShardPlanner;
 import io.hyperstack4j.registry.ShardMap;
 import io.hyperstack4j.sampler.Sampler;
-import io.hyperstack4j.tokenizer.SimpleTokenizer;
+import io.hyperstack4j.tokenizer.StubTokenizer;
 
 class InferenceApiServerTest {
 
@@ -69,7 +69,7 @@ class InferenceApiServerTest {
         var kvCache = new KVCacheManager(
                 new GpuKVCache(128L * 1024 * 1024), new CpuKVCache(256));
 
-        var loop      = new GenerationLoop(new SimpleTokenizer(), Sampler.create(), pipeline, kvCache);
+        var loop      = new GenerationLoop(new StubTokenizer(), Sampler.create(), pipeline, kvCache);
         var scheduler = new RequestScheduler(64, loop);
 
         // Build a registry with tinyllama already loaded

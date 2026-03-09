@@ -1,4 +1,4 @@
-package io.hyperstack4j.integration;
+package io.hyperstack4j.tokenizer;
 
 import java.util.ArrayList;
 import java.util.HashMap;

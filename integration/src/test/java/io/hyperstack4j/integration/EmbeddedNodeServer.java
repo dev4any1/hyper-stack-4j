@@ -23,17 +23,17 @@ import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.kvcache.LayerRange;
 import io.hyperstack4j.node.ActivationCodec;
 import io.hyperstack4j.node.CpuForwardPassHandler;
-import io.hyperstack4j.node.CyclicForwardPassHandler;
 import io.hyperstack4j.node.ForwardPassHandler;
 import io.hyperstack4j.node.ForwardResult;
 import io.hyperstack4j.node.ShardContext;
+import io.hyperstack4j.node.CyclicForwardPassHandler;
 import io.hyperstack4j.registry.ShardAssignment;
 
 /**
  * Minimal gRPC NodeService backed by CyclicForwardPassHandler.
  *
  * Used by ThreeNodeClusterIT — each node JVM runs one of these.
- * No GPU, no real weights — deterministic cyclic responses only.
+ * No GPU, no real weights — deterministic stub responses only.
  *
  * Activation compression:
  *   Each ForwardRequest carries a dtype field that tells this node how to decode
@@ -48,7 +48,7 @@ public final class EmbeddedNodeServer {
     private final int    port;
     private final Server grpcServer;
 
-    // TinyLlama-1.1B shape constants
+    // TinyLlama-1.1B shape constants (used when no model file is supplied)
     static final int VOCAB_SIZE   = 32_000;
     static final int HIDDEN_DIM   = 2_048;
     static final int NUM_HEADS    = 32;
