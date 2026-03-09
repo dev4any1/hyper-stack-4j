@@ -179,8 +179,12 @@ public final class ClusterHarness implements AutoCloseable {
 
 		ProcessBuilder pb = new ProcessBuilder(cmd);
 		pb.redirectErrorStream(false);
-		// In quiet mode discard node stderr entirely; in verbose mode inherit it
-		pb.redirectError(verbose ? ProcessBuilder.Redirect.INHERIT : ProcessBuilder.Redirect.DISCARD);
+		// Always PIPE stderr — we read it in waitForReady if startup fails.
+		// In verbose mode we also inherit it so it shows in the console.
+		if (verbose) {
+			pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+		}
+		// (non-verbose: stderr is left as PIPE so waitForReady can drain it on failure)
 
 		Process proc = pb.start();
 		log.info("Forked JVM for node [" + nodeId + "] PID=" + proc.pid());
@@ -189,6 +193,7 @@ public final class ClusterHarness implements AutoCloseable {
 
 	/**
 	 * Block until the process prints "READY:<nodeId>:..." or the timeout expires.
+	 * On failure, drains stderr from the dead process and includes it in the exception.
 	 */
 	private static void waitForReady(Process proc, String expectedNodeId) throws IOException, InterruptedException {
 
@@ -207,11 +212,27 @@ public final class ClusterHarness implements AutoCloseable {
 				}
 				if (!proc.isAlive()) {
 					throw new IOException("Node [" + expectedNodeId + "] process died before becoming ready (exit="
-							+ proc.exitValue() + ")");
+							+ proc.exitValue() + ")\n" + drainStderr(proc));
 				}
 			}
 		}
-		throw new IOException("Node [" + expectedNodeId + "] stdout closed without READY signal");
+
+		// stdout EOF — process exited without READY. Capture stderr for diagnosis.
+		String stderr = drainStderr(proc);
+		throw new IOException("Node [" + expectedNodeId + "] stdout closed without READY signal"
+				+ (stderr.isBlank() ? "" : "\nNode stderr:\n" + stderr));
+	}
+
+	/** Drain stderr from a (possibly dead) process into a string. */
+	private static String drainStderr(Process proc) {
+		try {
+			var errStream = proc.getErrorStream();
+			if (errStream == null) return "";
+			byte[] bytes = errStream.readAllBytes();
+			return new String(bytes, java.nio.charset.StandardCharsets.UTF_8).strip();
+		} catch (Exception e) {
+			return "(could not read stderr: " + e.getMessage() + ")";
+		}
 	}
 
 	// ── Inner type ────────────────────────────────────────────────────────────

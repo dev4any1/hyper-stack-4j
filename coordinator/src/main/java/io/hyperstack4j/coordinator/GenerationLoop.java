@@ -3,6 +3,7 @@ package io.hyperstack4j.coordinator;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Logger;
 
@@ -94,6 +95,7 @@ public final class GenerationLoop {
             starts[i]     = Instant.now();
 
             ChatTemplateFormatter formatter = ChatTemplateFormatter.forModelType(
+                    req.modelId().toLowerCase().contains("tinyllama") ? "tinyllama" :
                     req.modelId().contains("llama3")  ? "llama3"  :
                     req.modelId().contains("mistral") ? "mistral" :
                     req.modelId().contains("gemma")   ? "gemma"   : "chatml");
@@ -110,6 +112,23 @@ public final class GenerationLoop {
             texts[i]      = new StringBuilder();
             reasons[i]    = GenerationResult.StopReason.MAX_TOKENS;
             active[i]     = true;
+        }
+
+        // ── Step 1b: Prefill — populate KV cache for all uncached prompt tokens ─
+        // Each request gets its own prefill: walk positions startPos[i]..promptLen[i]-2
+        // so the KV cache is warm before the decode loop starts.
+        boolean[] hadCacheHit = new boolean[n]; // remember original hit status for later
+        for (int i = 0; i < n; i++) {
+            hadCacheHit[i] = (startPos[i] > 0);
+            int[] promptIds = Arrays.copyOfRange(allTokens[i], 0, promptLens[i]);
+            for (int p = startPos[i]; p < promptLens[i] - 1; p++) {
+                int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
+                pipeline.forward(requestIds[i], prefillSlice, p); // KV stored; logits discarded
+            }
+            // Decode step 0 covers position promptLen-1 (last prompt token)
+            if (promptLens[i] > 0) {
+                startPos[i] = promptLens[i] - 1;
+            }
         }
 
         // ── Steps 2–N: batched decode loop ────────────────────────────────────
@@ -168,7 +187,7 @@ public final class GenerationLoop {
         for (int i = 0; i < n; i++) {
 
             // Cache prompt prefix for future requests
-            if (startPos[i] == 0 && promptLens[i] > 0) {
+            if (!hadCacheHit[i] && promptLens[i] > 0) {
                 int[] promptOnly = new int[promptLens[i]];
                 System.arraycopy(allTokens[i], 0, promptOnly, 0, promptLens[i]);
                 kvCache.cachePrefix(promptOnly, promptOnly.length, requestIds[i] + ":prefix");
@@ -202,6 +221,7 @@ public final class GenerationLoop {
 
         // ── Step 1: Encode prompt ─────────────────────────────────────────────
         ChatTemplateFormatter formatter = ChatTemplateFormatter.forModelType(
+                request.modelId().toLowerCase().contains("tinyllama") ? "tinyllama" :
                 request.modelId().contains("llama3")  ? "llama3"  :
                 request.modelId().contains("mistral") ? "mistral" :
                 request.modelId().contains("gemma")   ? "gemma"   : "chatml"
@@ -222,6 +242,30 @@ public final class GenerationLoop {
         List<Integer> generatedIds = new ArrayList<>();
         StringBuilder fullText     = new StringBuilder();
         GenerationResult.StopReason stopReason = GenerationResult.StopReason.MAX_TOKENS;
+
+        // ── Step 2b: Prefill — populate KV cache for all uncached prompt tokens ──
+        // Walk positions startPos .. promptLen-2, storing KV at each position.
+        // The last prompt token (position promptLen-1) is left for step 0 of the
+        // decode loop so its logits can drive the first token sample.
+        int prefillSteps = promptIds.length - 1 - startPos;
+        if (prefillSteps > 0) {
+            log.info("Prefill: " + prefillSteps + " steps for prompt of "
+                    + promptIds.length + " tokens (request=" + requestId + ")");
+            consumer.onPrefillStart(promptIds.length);
+            for (int p = startPos; p < promptIds.length - 1; p++) {
+                int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
+                pipeline.forward(requestId, prefillSlice, p); // KV stored; logits discarded
+            }
+            consumer.onPrefillComplete();
+            log.info("Prefill complete. Decode starts at position " + (promptIds.length - 1));
+        }
+        // Advance startPos so the decode loop runs at the correct sequence positions:
+        //   step 0 → position promptLen-1 (last prompt token, yields first-token logits)
+        //   step 1 → position promptLen   (first generated token)
+        //   ...
+        if (promptIds.length > 0) {
+            startPos = promptIds.length - 1;
+        }
 
         // ── Steps 3–8: Autoregressive decode loop ─────────────────────────────
         int maxTokens = request.samplingParams().maxTokens();

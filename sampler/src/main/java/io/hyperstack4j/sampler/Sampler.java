@@ -67,12 +67,14 @@ public final class Sampler {
 
         float[] logits = rawLogits.clone(); // defensive copy — don't mutate caller's array
 
-        // Pipeline
+        // Pipeline — repetition penalty must run on raw logits, before softmax.
+        // Applying it after softmax (on probabilities) is nearly a no-op and
+        // causes the model to collapse into repeating the same token.
+        logits = repetitionPenaltyStep.apply(logits, params, generatedTokens);
         logits = temperatureStep.apply(logits, params, generatedTokens);
         logits = topKStep.apply(logits, params, generatedTokens);
         logits = softmaxStep.apply(logits, params, generatedTokens);
         logits = topPStep.apply(logits, params, generatedTokens);
-        logits = repetitionPenaltyStep.apply(logits, params, generatedTokens);
 
         return sampleStep.sample(logits, params);
     }

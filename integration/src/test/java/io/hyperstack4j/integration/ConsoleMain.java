@@ -116,7 +116,7 @@ public final class ConsoleMain {
         if (!ollamaModel.isBlank()) {
             runOllamaRepl(ollamaModel, ollamaUrl, maxTokens, temperature);
         } else {
-            runStubClusterRepl(dtype, maxTokens, temperature, modelPath);
+            runCpuClusterRepl(dtype, maxTokens, temperature, modelPath);
         }
     }
 
@@ -245,7 +245,7 @@ public final class ConsoleMain {
 
     // ── Stub cluster REPL ──────────────────────────────────────────────────────────
 
-    private static void runStubClusterRepl(ActivationDtype dtype, int maxTokens,
+    private static void runCpuClusterRepl(ActivationDtype dtype, int maxTokens,
                                            float temperature, String modelPath) throws Exception {
         print(CYAN + "▶ Starting 3-node cluster..." + RESET);
 
@@ -319,10 +319,30 @@ public final class ConsoleMain {
 
             long start = System.currentTimeMillis();
 
-            GenerationResult result = loop.generate(request, (piece, tokenId, step) -> {
-                System.out.print(piece);
-                System.out.flush();
-            });
+            // Anonymous consumer so we can hook onPrefillStart / onPrefillComplete
+            // and show a visible indicator during the (potentially slow) prefill phase.
+            io.hyperstack4j.coordinator.TokenConsumer consumer =
+                    new io.hyperstack4j.coordinator.TokenConsumer() {
+                @Override
+                public void onToken(String piece, int tokenId, int step) {
+                    System.out.println("[" + step + ":" + tokenId + "]" + piece);
+                    System.out.flush();
+                }
+                @Override
+                public void onPrefillStart(int promptLen) {
+                    System.out.print(DIM + "(prefilling " + promptLen + " tokens…) " + RESET);
+                    System.out.flush();
+                }
+                @Override
+                public void onPrefillComplete() {
+                    // Clear the "(prefilling…)" hint by overwriting with spaces,
+                    // then reprint the bot> marker so tokens follow it cleanly.
+                    System.out.print("\r" + BOLD + GREEN + "bot> " + RESET);
+                    System.out.flush();
+                }
+            };
+
+            GenerationResult result = loop.generate(request, consumer);
 
             long elapsed = System.currentTimeMillis() - start;
 

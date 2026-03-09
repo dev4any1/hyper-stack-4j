@@ -287,8 +287,12 @@ public final class CpuForwardPassHandler implements ForwardPassHandler {
 
 	/**
 	 * Rotary position embeddings (RoPE). Applied in-place to x[nHeads * headDim],
-	 * treating each head independently. Uses complex-number rotation: (x, y) →
-	 * (x*cos - y*sin, x*sin + y*cos)
+	 * treating each head independently.
+	 *
+	 * GGUF/llama.cpp LLaMA models use ADJACENT-pair rotation: (x[2i], x[2i+1]).
+	 * The W_Q and W_K weights in the GGUF file are pre-permuted by llama.cpp's
+	 * convert.py to match this convention. Using split-half pairing
+	 * (x[i], x[i+headDim/2]) produces completely wrong attention scores.
 	 */
 	static void rope(float[] x, int pos, int nHeads, int headDim, float ropeTheta) {
 		for (int h = 0; h < nHeads; h++) {
@@ -298,10 +302,10 @@ public final class CpuForwardPassHandler implements ForwardPassHandler {
 				double angle = pos * freq;
 				float cosA = (float) Math.cos(angle);
 				float sinA = (float) Math.sin(angle);
-				float x0 = x[base + i];
-				float x1 = x[base + i + headDim / 2];
-				x[base + i] = x0 * cosA - x1 * sinA;
-				x[base + i + headDim / 2] = x0 * sinA + x1 * cosA;
+				float x0 = x[base + 2 * i];
+				float x1 = x[base + 2 * i + 1];
+				x[base + 2 * i]     = x0 * cosA - x1 * sinA;
+				x[base + 2 * i + 1] = x0 * sinA + x1 * cosA;
 			}
 		}
 	}

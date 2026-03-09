@@ -116,18 +116,27 @@ public final class EmbeddedNodeServer {
                 StreamObserver<ForwardResponse> responseObserver) {
             try {
                 // ── Decode incoming activation ──────────────────────────────
-                io.hyperstack4j.node.ActivationDtype inDtype = fromProto(request.getDtype());
-                byte[] rawBytes = request.getActivation().toByteArray();
-                float[] inputActivations = ActivationCodec.decode(rawBytes, inDtype);
+            	// Inside forwardPass, after checking request.getError().isEmpty()
+            	byte[] rawBytes = request.getActivation().toByteArray();
+            	io.hyperstack4j.node.ActivationDtype inDtype = fromProto(request.getDtype());
+            	io.hyperstack4j.node.ForwardRequest nodeReq;
 
-                // Build the domain-model ForwardRequest (not the proto one)
-                io.hyperstack4j.node.ForwardRequest nodeReq =
-                        inputActivations.length == 0
-                                ? io.hyperstack4j.node.ForwardRequest.withTokens(
-                                        request.getRequestId(), new int[]{}, request.getSequencePos())
-                                : io.hyperstack4j.node.ForwardRequest.withActivations(
-                                        request.getRequestId(), inputActivations, request.getSequencePos());
-
+            	if (context.hasEmbeddings()) {
+            	    // First node: bytes are raw int32 token IDs
+            	    java.nio.IntBuffer intBuf = java.nio.ByteBuffer.wrap(rawBytes)
+            	            .order(java.nio.ByteOrder.BIG_ENDIAN)
+            	            .asIntBuffer();
+            	    int[] tokenIds = new int[intBuf.remaining()];
+            	    intBuf.get(tokenIds);
+            	    nodeReq = io.hyperstack4j.node.ForwardRequest.withTokens(
+            	            request.getRequestId(), tokenIds, request.getSequencePos());
+            	} else {
+            	    // Subsequent nodes: bytes are compressed activations
+            	    float[] inputActivations = ActivationCodec.decode(rawBytes, inDtype);
+            	    nodeReq = io.hyperstack4j.node.ForwardRequest.withActivations(
+            	            request.getRequestId(), inputActivations, request.getSequencePos());
+            	}
+            	
                 ForwardResult result = handler.forward(nodeReq, context);
 
                 // ── Encode outgoing activation ──────────────────────────────

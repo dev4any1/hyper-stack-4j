@@ -292,7 +292,9 @@ public final class GgufReader implements AutoCloseable {
     /** Extract 6-bit min[j] from Q4_K scales block. */
     private static int getMin4K(byte[] sc, int j) {
         if (j < 4) return sc[j + 4] & 0x3F;
-        return ((sc[j + 4] >> 4) | ((sc[j] & 0xC0) >> 2)) & 0x3F;
+        // sc bytes are signed in Java — mask with 0xFF before >> 4 to prevent
+        // arithmetic sign-extension corrupting the upper bits of the result.
+        return (((sc[j + 4] & 0xFF) >> 4) | ((sc[j] & 0xC0) >> 2)) & 0x3F;
     }
 
     // Q6_K: superblocks of 256 elements

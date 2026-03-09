@@ -35,20 +35,16 @@ public final class RepetitionPenaltyStep implements SamplingStep {
         Set<Integer> seen = new HashSet<>(generatedTokens.length * 2);
         for (int token : generatedTokens) seen.add(token);
 
+        // Apply penalty in logit space (before softmax).
+        // Positive logits are divided (suppressed), negative logits are multiplied
+        // (pushed further negative) — both reduce the token's probability.
         for (int tokenId : seen) {
             if (tokenId >= 0 && tokenId < logits.length) {
-                logits[tokenId] /= penalty;
-            }
-        }
-
-        // Re-normalize after penalty adjustment
-        float sum = 0.0f;
-        for (float v : logits) {
-            if (v > 0.0f) sum += v;
-        }
-        if (sum > 0.0f) {
-            for (int i = 0; i < logits.length; i++) {
-                if (logits[i] > 0.0f) logits[i] /= sum;
+                if (logits[tokenId] > 0) {
+                    logits[tokenId] /= penalty;
+                } else {
+                    logits[tokenId] *= penalty;
+                }
             }
         }
 

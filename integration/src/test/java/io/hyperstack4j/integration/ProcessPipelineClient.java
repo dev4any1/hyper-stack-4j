@@ -70,6 +70,8 @@ public final class ProcessPipelineClient implements InferencePipeline {
 
     @Override
     public float[] forward(String requestId, int[] tokens, int startPos) {
+    	if (tokens == null)
+    	    throw new IllegalArgumentException("tokenIds cannot be null");
         // First node receives raw token IDs as a byte payload; dtype is set for the response
         byte[] activation = intsToBytes(tokens);
 

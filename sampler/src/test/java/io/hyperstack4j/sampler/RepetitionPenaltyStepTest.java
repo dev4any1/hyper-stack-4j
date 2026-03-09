@@ -45,14 +45,22 @@ class RepetitionPenaltyStepTest {
     }
 
     @Test
-    void probabilities_still_sum_to_one_after_penalty() {
-        float[] probs = {0.4f, 0.3f, 0.2f, 0.1f};
+    void negative_logits_are_pushed_further_down_after_penalty() {
+        // RepetitionPenaltyStep operates on raw logits (before softmax).
+        // Positive logits are divided, negative logits are multiplied —
+        // both reduce the token's eventual probability. No renormalization;
+        // that is softmax's job, which runs after this step.
+        float[] logits = {2.0f, -1.0f, 0.5f, -0.5f};
         SamplingParams params = SamplingParams.defaults().withRepetitionPenalty(1.3f);
 
-        step.apply(probs, params, new int[]{0, 1});
+        step.apply(logits, params, new int[]{0, 1}); // penalise tokens 0 (positive) and 1 (negative)
 
-        float sum = 0.0f;
-        for (float v : probs) sum += v;
-        assertThat(sum).isCloseTo(1.0f, within(1e-5f));
+        // Token 0: positive logit → divided → less positive
+        assertThat(logits[0]).isCloseTo(2.0f / 1.3f, within(1e-5f));
+        // Token 1: negative logit → multiplied → more negative
+        assertThat(logits[1]).isCloseTo(-1.0f * 1.3f, within(1e-5f));
+        // Unseen tokens unchanged
+        assertThat(logits[2]).isCloseTo(0.5f,  within(1e-5f));
+        assertThat(logits[3]).isCloseTo(-0.5f, within(1e-5f));
     }
 }
