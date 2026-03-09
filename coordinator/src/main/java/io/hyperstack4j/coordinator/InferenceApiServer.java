@@ -1,21 +1,15 @@
-package io.hyperstack4j.coordinator.rest;
+package io.hyperstack4j.coordinator;
 
 import java.util.List;
 import java.util.Map;
 import java.util.logging.Logger;
-import java.util.stream.Collectors;
 
-import io.javalin.Javalin;
-import io.javalin.http.Context;
-import io.hyperstack4j.coordinator.GenerationResult;
-import io.hyperstack4j.coordinator.InferenceRequest;
-import io.hyperstack4j.coordinator.RequestPriority;
-import io.hyperstack4j.coordinator.RequestScheduler;
-import io.hyperstack4j.coordinator.TokenConsumer;
 import io.hyperstack4j.registry.ModelDescriptor;
 import io.hyperstack4j.registry.ModelRegistry;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
+import io.javalin.Javalin;
+import io.javalin.http.Context;
 
 /**
  * Javalin-based REST API server for the hyper-stack-4j coordinator.

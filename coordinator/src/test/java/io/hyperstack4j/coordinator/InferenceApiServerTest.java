@@ -1,4 +1,4 @@
-package io.hyperstack4j.coordinator.rest;
+package io.hyperstack4j.coordinator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

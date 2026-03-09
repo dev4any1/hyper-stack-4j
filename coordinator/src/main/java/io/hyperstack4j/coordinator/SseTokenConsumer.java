@@ -1,6 +1,4 @@
-package io.hyperstack4j.coordinator.rest;
-
-import io.hyperstack4j.coordinator.TokenConsumer;
+package io.hyperstack4j.coordinator;
 
 /**
  * TokenConsumer implementation that writes each token as an SSE JSON event.
