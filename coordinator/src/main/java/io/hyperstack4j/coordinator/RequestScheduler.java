@@ -12,231 +12,240 @@ import java.util.logging.Logger;
  * Priority-aware request scheduler with optional micro-batching.
  *
  * ── Batching disabled (BatchConfig.disabled() or 2-arg constructor) ──────────
- *   Original behaviour: every request dispatched immediately on its own virtual
- *   thread. submit() returns a future that completes when generation finishes.
+ * Original behaviour: every request dispatched immediately on its own virtual
+ * thread. submit() returns a future that completes when generation finishes.
  *
  * ── Batching enabled (BatchConfig with maxBatchSize > 1) ─────────────────────
- *   A single background virtual thread runs the batch-collect loop:
+ * A single background virtual thread runs the batch-collect loop:
  *
- *     loop:
- *       1. Block on queue.poll(batchWindowMs) — wait for first request
- *       2. Drain up to (maxBatchSize - 1) more with non-blocking poll()
- *       3. Dispatch the batch on a new virtual thread via generateBatch()
- *       4. Each result completes the corresponding CompletableFuture
- *       5. Immediately resume collecting the next batch
+ * loop: 1. Block on queue.poll(batchWindowMs) — wait for first request 2. Drain
+ * up to (maxBatchSize - 1) more with non-blocking poll() 3. Dispatch the batch
+ * on a new virtual thread via generateBatch() 4. Each result completes the
+ * corresponding CompletableFuture 5. Immediately resume collecting the next
+ * batch
  *
- *   The batch dispatch thread runs concurrently with collection, so the
- *   collector never blocks waiting for GPU work to finish.
+ * The batch dispatch thread runs concurrently with collection, so the collector
+ * never blocks waiting for GPU work to finish.
  *
- * ── Streaming ─────────────────────────────────────────────────────────────────
- *   Both paths deliver tokens via TokenConsumer. Batching is transparent.
+ * ── Streaming
+ * ───────────────────────────────────────────────────────────────── Both paths
+ * deliver tokens via TokenConsumer. Batching is transparent.
  *
- * ── Thread safety ─────────────────────────────────────────────────────────────
- *   PriorityBlockingQueue:  producer/consumer coordination
- *   ConcurrentHashMap:      request-id → inflight entry mapping
- *   volatile running:       clean shutdown signal
+ * ── Thread safety
+ * ─────────────────────────────────────────────────────────────
+ * PriorityBlockingQueue: producer/consumer coordination ConcurrentHashMap:
+ * request-id → inflight entry mapping volatile running: clean shutdown signal
  */
 public final class RequestScheduler {
 
-    private static final Logger log = Logger.getLogger(RequestScheduler.class.getName());
+	private static final Logger log = Logger.getLogger(RequestScheduler.class.getName());
 
-    private final int                                      maxQueueDepth;
-    private final PriorityBlockingQueue<InferenceRequest>  queue;
-    private final GenerationLoop                           generationLoop;
-    private final BatchConfig                              batchConfig;
-    private final ConcurrentHashMap<String, InflightEntry> inflight = new ConcurrentHashMap<>();
+	private final int maxQueueDepth;
+	private final PriorityBlockingQueue<InferenceRequest> queue;
+	private final GenerationLoop generationLoop;
+	private final BatchConfig batchConfig;
+	private final ConcurrentHashMap<String, InflightEntry> inflight = new ConcurrentHashMap<>();
 
-    private volatile boolean running = true;
+	private volatile boolean running = true;
 
-    // ── Constructors ──────────────────────────────────────────────────────────
+	// ── Constructors ──────────────────────────────────────────────────────────
 
-    /**
-     * Backward-compatible 2-arg constructor — batching disabled.
-     * All existing tests and callers compile and pass without change.
-     */
-    public RequestScheduler(int maxQueueDepth, GenerationLoop generationLoop) {
-        this(maxQueueDepth, generationLoop, BatchConfig.disabled());
-    }
+	/**
+	 * Backward-compatible 2-arg constructor — batching disabled. All existing tests
+	 * and callers compile and pass without change.
+	 */
+	public RequestScheduler(int maxQueueDepth, GenerationLoop generationLoop) {
+		this(maxQueueDepth, generationLoop, BatchConfig.disabled());
+	}
 
-    /**
-     * Full constructor with explicit batching config.
-     * Starts the background collect loop when batching is enabled.
-     */
-    public RequestScheduler(int maxQueueDepth, GenerationLoop generationLoop, BatchConfig batchConfig) {
-        if (maxQueueDepth < 1)
-            throw new IllegalArgumentException("maxQueueDepth must be >= 1");
-        if (generationLoop == null)
-            throw new IllegalArgumentException("generationLoop must not be null");
-        if (batchConfig == null)
-            throw new IllegalArgumentException("batchConfig must not be null");
+	/**
+	 * Full constructor with explicit batching config. Starts the background collect
+	 * loop when batching is enabled.
+	 */
+	public RequestScheduler(int maxQueueDepth, GenerationLoop generationLoop, BatchConfig batchConfig) {
+		if (maxQueueDepth < 1)
+			throw new IllegalArgumentException("maxQueueDepth must be >= 1");
+		if (generationLoop == null)
+			throw new IllegalArgumentException("generationLoop must not be null");
+		if (batchConfig == null)
+			throw new IllegalArgumentException("batchConfig must not be null");
 
-        this.maxQueueDepth  = maxQueueDepth;
-        this.generationLoop = generationLoop;
-        this.batchConfig    = batchConfig;
-        this.queue          = new PriorityBlockingQueue<>(maxQueueDepth);
+		this.maxQueueDepth = maxQueueDepth;
+		this.generationLoop = generationLoop;
+		this.batchConfig = batchConfig;
+		this.queue = new PriorityBlockingQueue<>(maxQueueDepth);
 
-        if (batchConfig.isBatchingEnabled()) {
-            startBatchDispatchLoop();
-        }
-    }
+		if (batchConfig.isBatchingEnabled()) {
+			startBatchDispatchLoop();
+		}
+	}
 
-    // ── Public API ────────────────────────────────────────────────────────────
+	// ── Public API ────────────────────────────────────────────────────────────
 
-    /**
-     * Submit a request for async execution. Returns immediately.
-     * Tokens delivered via consumer; future completes on generation finish.
-     *
-     * @throws QueueFullException if queue has reached maxQueueDepth
-     */
-    public CompletableFuture<GenerationResult> submit(InferenceRequest request, TokenConsumer consumer) {
-        if (queue.size() >= maxQueueDepth) {
-            throw new QueueFullException(
-                    "Request queue full (" + maxQueueDepth + "). Retry later.",
-                    estimateRetryAfterSeconds());
-        }
+	/**
+	 * Submit a request for async execution. Returns immediately. Tokens delivered
+	 * via consumer; future completes on generation finish.
+	 *
+	 * @throws QueueFullException if queue has reached maxQueueDepth
+	 */
+	public CompletableFuture<GenerationResult> submit(InferenceRequest request, TokenConsumer consumer) {
+		if (queue.size() >= maxQueueDepth) {
+			throw new QueueFullException("Request queue full (" + maxQueueDepth + "). Retry later.",
+					estimateRetryAfterSeconds());
+		}
 
-        CompletableFuture<GenerationResult> future = new CompletableFuture<>();
-        // Register to inflight BEFORE queue.offer() — no lost-wakeup risk
-        inflight.put(request.requestId(), new InflightEntry(request, consumer, future));
-        queue.offer(request);
+		CompletableFuture<GenerationResult> future = new CompletableFuture<>();
+		// Register to inflight BEFORE queue.offer() — no lost-wakeup risk
+		inflight.put(request.requestId(), new InflightEntry(request, consumer, future));
+		queue.offer(request);
 
-        if (!batchConfig.isBatchingEnabled()) {
-            dispatchSingle(request, consumer, future);
-        }
-        // Batching enabled: background loop picks it up from the queue
+		if (!batchConfig.isBatchingEnabled()) {
+			dispatchSingle(request, consumer, future);
+		}
+		// Batching enabled: background loop picks it up from the queue
 
-        return future;
-    }
+		return future;
+	}
 
-    /**
-     * Submit and block until generation completes (non-streaming use case).
-     *
-     * @throws QueueFullException if queue has reached maxQueueDepth
-     */
-    public GenerationResult submitAndWait(InferenceRequest request) {
-        return submit(request, TokenConsumer.discard()).join();
-    }
+	/**
+	 * Submit and block until generation completes (non-streaming use case).
+	 *
+	 * @throws QueueFullException if queue has reached maxQueueDepth
+	 */
+	public GenerationResult submitAndWait(InferenceRequest request) {
+		return submit(request, TokenConsumer.discard()).join();
+	}
 
-    /** Stop the batch dispatch loop. No-op if batching was never enabled. */
-    public void shutdown() {
-        running = false;
-    }
+	/** Stop the batch dispatch loop. No-op if batching was never enabled. */
+	public void shutdown() {
+		running = false;
+	}
 
-    public int queueDepth()    { return queue.size(); }
-    public int maxQueueDepth() { return maxQueueDepth; }
+	public int queueDepth() {
+		return queue.size();
+	}
 
-    // ── Batch dispatch loop ───────────────────────────────────────────────────
+	public int maxQueueDepth() {
+		return maxQueueDepth;
+	}
 
-    private void startBatchDispatchLoop() {
-        Thread.ofVirtual().name("batch-collector").start(() -> {
-            while (running) {
-                try {
-                    List<InferenceRequest> batch = collectBatch();
-                    if (batch.isEmpty()) continue;
-                    dispatchBatch(batch);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    log.warning("Batch dispatch error: " + e.getMessage());
-                }
-            }
-            log.fine("Batch dispatch loop stopped");
-        });
-    }
+	// ── Batch dispatch loop ───────────────────────────────────────────────────
 
-    /**
-     * Collect up to maxBatchSize requests.
-     * Blocks up to batchWindowMs for the first, then drains the rest immediately.
-     */
-    private List<InferenceRequest> collectBatch() throws InterruptedException {
-        List<InferenceRequest> batch = new ArrayList<>(batchConfig.maxBatchSize());
+	private void startBatchDispatchLoop() {
+		Thread.ofVirtual().name("batch-collector").start(() -> {
+			while (running) {
+				try {
+					List<InferenceRequest> batch = collectBatch();
+					if (batch.isEmpty())
+						continue;
+					dispatchBatch(batch);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					break;
+				} catch (Exception e) {
+					log.warning("Batch dispatch error: " + e.getMessage());
+				}
+			}
+			log.fine("Batch dispatch loop stopped");
+		});
+	}
 
-        long windowMs = batchConfig.batchWindowMs();
-        InferenceRequest first = (windowMs > 0)
-                ? queue.poll(windowMs, TimeUnit.MILLISECONDS)
-                : queue.poll();
+	/**
+	 * Collect up to maxBatchSize requests. Blocks up to batchWindowMs for the
+	 * first, then drains the rest immediately.
+	 */
+	private List<InferenceRequest> collectBatch() throws InterruptedException {
+		List<InferenceRequest> batch = new ArrayList<>(batchConfig.maxBatchSize());
 
-        if (first == null) return batch;
-        batch.add(first);
+		long windowMs = batchConfig.batchWindowMs();
+		InferenceRequest first = (windowMs > 0) ? queue.poll(windowMs, TimeUnit.MILLISECONDS) : queue.poll();
 
-        while (batch.size() < batchConfig.maxBatchSize()) {
-            InferenceRequest next = queue.poll();
-            if (next == null) break;
-            batch.add(next);
-        }
+		if (first == null)
+			return batch;
+		batch.add(first);
 
-        return batch;
-    }
+		while (batch.size() < batchConfig.maxBatchSize()) {
+			InferenceRequest next = queue.poll();
+			if (next == null)
+				break;
+			batch.add(next);
+		}
 
-    /**
-     * Dispatch a collected batch on a new virtual thread so the collector loop
-     * can resume immediately.
-     */
-    private void dispatchBatch(List<InferenceRequest> requests) {
-        Thread.ofVirtual().name("batch-gen-" + requests.get(0).requestId()).start(() -> {
-            List<BatchEntry> entries = new ArrayList<>(requests.size());
-            for (InferenceRequest req : requests) {
-                InflightEntry e = inflight.get(req.requestId());
-                if (e != null) entries.add(new BatchEntry(e.request(), e.consumer()));
-            }
-            if (entries.isEmpty()) return;
+		return batch;
+	}
 
-            try {
-                List<GenerationResult> results = generationLoop.generateBatch(entries);
-                for (int i = 0; i < entries.size(); i++) {
-                    String id = entries.get(i).request().requestId();
-                    InflightEntry inflt = inflight.remove(id);
-                    if (inflt != null) inflt.future().complete(results.get(i));
-                }
-            } catch (Exception e) {
-                log.warning("Batch generation failed: " + e.getMessage());
-                for (BatchEntry entry : entries) {
-                    InflightEntry inflt = inflight.remove(entry.request().requestId());
-                    if (inflt != null) inflt.future().completeExceptionally(e);
-                }
-            }
-        });
-    }
+	/**
+	 * Dispatch a collected batch on a new virtual thread so the collector loop can
+	 * resume immediately.
+	 */
+	private void dispatchBatch(List<InferenceRequest> requests) {
+		Thread.ofVirtual().name("batch-gen-" + requests.get(0).requestId()).start(() -> {
+			List<BatchEntry> entries = new ArrayList<>(requests.size());
+			for (InferenceRequest req : requests) {
+				InflightEntry e = inflight.get(req.requestId());
+				if (e != null)
+					entries.add(new BatchEntry(e.request(), e.consumer()));
+			}
+			if (entries.isEmpty())
+				return;
 
-    // ── Single-request dispatch (batching disabled) ───────────────────────────
+			try {
+				List<GenerationResult> results = generationLoop.generateBatch(entries);
+				for (int i = 0; i < entries.size(); i++) {
+					String id = entries.get(i).request().requestId();
+					InflightEntry inflt = inflight.remove(id);
+					if (inflt != null)
+						inflt.future().complete(results.get(i));
+				}
+			} catch (Exception e) {
+				log.warning("Batch generation failed: " + e.getMessage());
+				for (BatchEntry entry : entries) {
+					InflightEntry inflt = inflight.remove(entry.request().requestId());
+					if (inflt != null)
+						inflt.future().completeExceptionally(e);
+				}
+			}
+		});
+	}
 
-    private void dispatchSingle(InferenceRequest request, TokenConsumer consumer,
-                                CompletableFuture<GenerationResult> future) {
-        Thread.ofVirtual().name("gen-" + request.requestId()).start(() -> {
-            try {
-                GenerationResult result = generationLoop.generate(request, consumer);
-                future.complete(result);
-            } catch (Exception e) {
-                log.warning("Generation failed for " + request.requestId() + ": " + e.getMessage());
-                future.completeExceptionally(e);
-            } finally {
-                queue.remove(request);
-                inflight.remove(request.requestId());
-            }
-        });
-    }
+	// ── Single-request dispatch (batching disabled) ───────────────────────────
 
-    private int estimateRetryAfterSeconds() {
-        return Math.max(1, queue.size() * 2);
-    }
+	private void dispatchSingle(InferenceRequest request, TokenConsumer consumer,
+			CompletableFuture<GenerationResult> future) {
+		Thread.ofVirtual().name("gen-" + request.requestId()).start(() -> {
+			try {
+				GenerationResult result = generationLoop.generate(request, consumer);
+				future.complete(result);
+			} catch (Exception e) {
+				log.warning("Generation failed for " + request.requestId() + ": " + e.getMessage());
+				future.completeExceptionally(e);
+			} finally {
+				queue.remove(request);
+				inflight.remove(request.requestId());
+			}
+		});
+	}
 
-    // ── Inner types ───────────────────────────────────────────────────────────
+	private int estimateRetryAfterSeconds() {
+		return Math.max(1, queue.size() * 2);
+	}
 
-    private record InflightEntry(
-            InferenceRequest request,
-            TokenConsumer consumer,
-            CompletableFuture<GenerationResult> future
-    ) {}
+	// ── Inner types ───────────────────────────────────────────────────────────
 
-    public static final class QueueFullException extends RuntimeException {
-        private final int retryAfterSeconds;
+	private record InflightEntry(InferenceRequest request, TokenConsumer consumer,
+			CompletableFuture<GenerationResult> future) {
+	}
 
-        public QueueFullException(String message, int retryAfterSeconds) {
-            super(message);
-            this.retryAfterSeconds = retryAfterSeconds;
-        }
+	public static final class QueueFullException extends RuntimeException {
+		private final int retryAfterSeconds;
 
-        public int retryAfterSeconds() { return retryAfterSeconds; }
-    }
+		public QueueFullException(String message, int retryAfterSeconds) {
+			super(message);
+			this.retryAfterSeconds = retryAfterSeconds;
+		}
+
+		public int retryAfterSeconds() {
+			return retryAfterSeconds;
+		}
+	}
 }

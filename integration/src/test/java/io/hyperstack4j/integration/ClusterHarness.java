@@ -158,8 +158,8 @@ public final class ClusterHarness implements AutoCloseable {
 		String classpath = System.getProperty("java.class.path");
 		boolean verbose = "true".equalsIgnoreCase(System.getProperty("HYPER_VERBOSE"));
 
-		java.util.List<String> cmd = new java.util.ArrayList<>(
-				java.util.List.of(javaExe, "--enable-preview", "-Xms512m", "-Xmx4g", "-XX:+UseZGC"));
+		java.util.List<String> cmd = new java.util.ArrayList<>(java.util.List.of(javaExe, "--enable-preview",
+				"--enable-native-access=ALL-UNNAMED", "-Xms512m", "-Xmx4g", "-XX:+UseZGC"));
 
 		if (!verbose) {
 			// Write a temp JUL config that silences all logging in this node JVM.
@@ -193,7 +193,8 @@ public final class ClusterHarness implements AutoCloseable {
 
 	/**
 	 * Block until the process prints "READY:<nodeId>:..." or the timeout expires.
-	 * On failure, drains stderr from the dead process and includes it in the exception.
+	 * On failure, drains stderr from the dead process and includes it in the
+	 * exception.
 	 */
 	private static void waitForReady(Process proc, String expectedNodeId) throws IOException, InterruptedException {
 
@@ -227,7 +228,8 @@ public final class ClusterHarness implements AutoCloseable {
 	private static String drainStderr(Process proc) {
 		try {
 			var errStream = proc.getErrorStream();
-			if (errStream == null) return "";
+			if (errStream == null)
+				return "";
 			byte[] bytes = errStream.readAllBytes();
 			return new String(bytes, java.nio.charset.StandardCharsets.UTF_8).strip();
 		} catch (Exception e) {

@@ -2,7 +2,7 @@
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
   JDK 21 · Maven · Java-native · Commodity GPU Cluster
-  Last updated: 2026-03-08 (session 4)
+  Last updated: 2026-03-10 (session 5)
 ================================================================================
 
 
@@ -47,7 +47,8 @@ Far cheaper than one 64GB GPU.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
-2026-03-07. 85 Java source files, 6090 lines. 11/11 tests green.
+2026-03-10. 69 production Java source files, 53 test files, 340 @Test methods.
+6310 production lines, 6711 test lines.
 
   hyper-stack-4j/               <- parent POM
   |
@@ -59,17 +60,26 @@ Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
   |                                SeedScorer, InsufficientClusterVramException
   +-- coordinator/              <- GenerationLoop, RequestScheduler,
   |                                InferenceRequest, GenerationResult,
-  |                                TokenConsumer, RequestPriority
+  |                                TokenConsumer, RequestPriority,
+  |                                BatchConfig, BatchEntry,
+  |                                FaultTolerantPipeline, RetryPolicy,
+  |                                PipelineUnavailableException,
+  |                                HealthReactor, InferenceApiServer,
+  |                                SseTokenConsumer
   +-- node/                     <- InferencePipeline, LocalInferencePipeline,
-  |                                ForwardPassHandler, StubForwardPassHandler,
+  |                                ForwardPassHandler, CyclicForwardPassHandler,
   |                                CpuForwardPassHandler (real transformer math),
   |                                GgufReader (GGUF v2/v3 binary parser),
   |                                LlamaConfig (hyperparams from GGUF metadata),
-  |                                ForwardRequest, ForwardResult, ShardContext
+  |                                ActivationCodec, ActivationDtype,
+  |                                ForwardRequest, ForwardResult, ShardContext,
+  |                                NodeConfig
   +-- kvcache/                  <- KVCacheManager, GpuKVCache, CpuKVCache,
-  |                                PrefixCache, KVBlock, KVKey, KVCache
+  |                                PrefixCache, KVBlock, KVKey, KVCache,
+  |                                LayerRange
   +-- tokenizer/                <- Tokenizer, StubTokenizer, DJLTokenizer,
   |                                GgufTokenizer (SentencePiece BPE from GGUF),
+  |                                SimpleTokenizer,
   |                                ChatMessage, ChatTemplate,
   |                                ChatTemplateFormatter
   +-- sampler/                  <- Sampler, SamplingParams, SamplingStep,
@@ -81,13 +91,14 @@ Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
   +-- integration/              <- Multi-JVM cluster integration tests + REPL
       +-- ClusterHarness        <- forks 3 node JVMs; accepts optional MODEL_PATH
       +-- EmbeddedNodeServer    <- gRPC NodeServiceImpl; uses CpuForwardPassHandler
-      |                            when MODEL_PATH set, StubForwardPassHandler otherwise
+      |                            when MODEL_PATH set, CyclicForwardPassHandler otherwise
       +-- NodeMain              <- JVM entry point, prints READY:<nodeId>:<port>
       +-- ProcessPipelineClient <- InferencePipeline over real gRPC channels
       +-- GgufTokenizer         <- SentencePiece BPE from GGUF metadata (no .model file)
       +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model)
-      +-- InProcessClusterIT    <- in-process 3-node test, zero network
-      +-- ThreeNodeClusterIT    <- full 3-JVM test over real sockets
+      +-- InProcessClusterIT    <- in-process 3-node test, zero network  (6 tests)
+      +-- ThreeNodeClusterIT    <- full 3-JVM test over real sockets      (9 tests)
+      +-- TinyLlamaLiveIT       <- real-model IT, skipped if no MODEL_PATH (7 tests)
 
 Group ID:    io.hyperstack4j
 Artifact ID: hyper-stack-4j
@@ -459,13 +470,32 @@ Example metrics endpoint:
   ─────────────────────────────────────────────────────────────────────────────
 
 8.5  TOKENIZER
-  Library                 DJL SpTokenizer (SentencePiece JNI wrapper)
-  Model coverage          LLaMA 2/3, Mistral, Gemma
-  Chat templates          ChatTemplateFormatter, loaded from tokenizer_config.json
+  Library                 GgufTokenizer (built-in, no JNI) — primary path
+                          DJLTokenizer (SentencePiece JNI) — alternative
+  Model coverage          LLaMA 2/3, TinyLlama, Mistral, Gemma
+  Chat templates          ChatTemplateFormatter.forModelType(modelId) — case-insensitive
+
+  ChatTemplate registry (ChatTemplate.BUILT_IN):
+    "llama3"    → <|begin_of_text|>...<|eot_id|>...<|start_header_id|>assistant<|end_header_id|>
+    "mistral"   → [INST] ... [/INST]
+    "gemma"     → <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
+    "chatml"    → <|im_start|>role\n...<|im_end|>\n   ← default fallback
+    "tinyllama" → <|user|>\n{content}</s>\n<|assistant|>\n  ← Zephyr format
+    "zephyr"    → (alias for tinyllama — same instance)
+
+  IMPORTANT: TinyLlama-1.1B-Chat-v1.0 is fine-tuned on the Zephyr template,
+  NOT ChatML. Sending ChatML tokens produces complete garbage. Always use
+  modelId="tinyllama" or "zephyr" for this model.
+
+  decodeToken() contract: MUST return a space-separated string, not raw
+  SentencePiece pieces. GgufTokenizer.decodeToken() replaces ▁ (U+2581)
+  with a real space. This applies in both streaming (token by token) and
+  batch (full decode()) paths — they must both replace ▁ independently.
+
   Performance             ~50k sentences/sec
   Thread safety           StubTokenizer uses HashMap + unsynchronized nextId —
                           NOT thread-safe for concurrent encode() calls with new
-                          tokens. Pre-warm (or use DJLTokenizer) in production.
+                          tokens. Pre-warm (or use GgufTokenizer) in production.
 
 8.6  SAMPLER
   Pure Java, zero external deps.
@@ -493,7 +523,7 @@ under mvn verify.
     NodeMain JVM #3  (port 19094, -Xmx4g -XX:+UseZGC)
 
   Each NodeMain starts an EmbeddedNodeServer (gRPC NodeServiceImpl backed by
-  StubForwardPassHandler) and prints READY:<nodeId>:<port> to stdout.
+  CyclicForwardPassHandler) and prints READY:<nodeId>:<port> to stdout.
   ClusterHarness reads stdout until all 3 READY signals are received.
 
   ProcessPipelineClient implements InferencePipeline with real gRPC channels
@@ -512,7 +542,43 @@ under mvn verify.
     vocab_size=32000, hidden_dim=2048, layers=22, heads=32, size=~670MB
     Layer split across 3 nodes: 8 / 7 / 7
 
-9.3  Concurrent request tests
+9.3  TinyLlamaLiveIT  (real model, skipped without MODEL_PATH)
+  Located: integration/src/test/java/io/hyperstack4j/integration/TinyLlamaLiveIT.java
+  Model resolved from -Dit.model.path or $MODEL_PATH env var.
+  All 7 tests wrapped in Assumptions.assumeTrue — skipped cleanly in CI without
+  a model file. Order-annotated so failures pinpoint which invariant broke.
+
+  Tests (in order):
+    1. hello_produces_coherent_english_greeting
+         Primary non-regression anchor for all 3 bugs.
+         Asserts ≥ 3 tokens, ≥ 2 words from greeting vocabulary
+         {how, are, you, hello, hi, help, doing, today, there, welcome,
+          assist, can, i, what, do}.
+
+    2. tokens_contain_no_raw_sentencepiece_markers
+         Asserts no ▁ (U+2581) appears in any decoded token piece.
+         Guards against Bug 2 regression (▁ leaking in streaming path).
+
+    3. question_produces_relevant_response
+         "What is 2 plus 2?" → non-empty response.
+
+    4. greedy_sampling_is_deterministic
+         temperature=0.0, same prompt twice → identical generated text.
+
+    5. multi_turn_conversation_is_coherent
+         3-turn conversation with follow-up questions.
+         Asserts promptTokens > 20 (context is being accumulated).
+
+    6. float16_activations_produce_same_first_token
+         FLOAT16 pipeline first token == FLOAT32 first token.
+         Guards against activation compression regressions.
+
+  Run command:
+    mvn verify -pl integration \
+      -Dit.model.path=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf \
+      -Dit.test=TinyLlamaLiveIT
+
+9.4  Concurrent request tests
   Both ITs test concurrent requests via scheduler.submit() which returns
   a CompletableFuture per request. Tests use CompletableFuture.allOf() to
   wait for all N requests in parallel — no CountDownLatch, no polling.
@@ -525,18 +591,27 @@ under mvn verify.
     CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                      .get(30, TimeUnit.SECONDS);
 
-9.4  Run commands
-  # Full suite — forks 3 JVM node processes
+9.5  Run commands
+  # Full suite — forks 3 JVM node processes (stub mode)
   mvn verify -pl integration
 
   # In-process only
   mvn verify -pl integration -Dit.test=InProcessClusterIT
 
+  # Real model — runs TinyLlamaLiveIT (skipped without this flag)
+  mvn verify -pl integration \
+    -Dit.model.path=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+
+  # Real model, single IT class
+  mvn verify -pl integration \
+    -Dit.model.path=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf \
+    -Dit.test=TinyLlamaLiveIT
+
+  # Unit tests for tokenizer + node only (fast after bug-fix work)
+  mvn test -pl tokenizer,node
+
   # Skip ITs
   mvn verify -DskipITs
-
-  # With real model (when GpuForwardPassHandler implemented)
-  mvn verify -pl integration -Dit.model.path=/models/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -757,29 +832,49 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-13. BUILD STATUS (as of 2026-03-07)
+13. BUILD STATUS (as of 2026-03-10, session 5)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   hyper-stack-4j   SUCCESS  (parent pom)
-  api              SUCCESS  (63 source files compiled — OpenAPI + gRPC + proto)
-  registry         SUCCESS  (NodeDescriptor, ShardPlanner, ShardMap, SeedScorer)
-  tokenizer        SUCCESS  (StubTokenizer, DJLTokenizer, ChatTemplateFormatter)
-  sampler          SUCCESS  (full pipeline — 8 steps, 3 preset profiles)
-  kvcache          SUCCESS  (GpuKVCache, CpuKVCache, PrefixCache, KVCacheManager)
-  health           SUCCESS  (CircuitBreaker, HealthEvaluator, NodeHealth)
-  node             SUCCESS  (LocalInferencePipeline, StubForwardPassHandler)
-  coordinator      SUCCESS  (GenerationLoop, RequestScheduler)
-  integration      SUCCESS  (InProcessClusterIT + ThreeNodeClusterIT)
+  api              SUCCESS  (OpenAPI + gRPC + proto generated sources)
+  registry         SUCCESS  (11 classes: NodeDescriptor, ShardPlanner, ShardMap,
+                             ShardAssignment, SeedScorer, ModelDescriptor,
+                             ModelRegistry, ModelStatus, NodeStatus, NodeConfig,
+                             QuantizationType, InsufficientClusterVramException)
+  tokenizer        SUCCESS  (8 classes: Tokenizer, StubTokenizer, DJLTokenizer,
+                             SimpleTokenizer, GgufTokenizer, ChatMessage,
+                             ChatTemplate, ChatTemplateFormatter)
+  sampler          SUCCESS  (9 classes: full pipeline — 8 steps, 3 preset profiles)
+  kvcache          SUCCESS  (8 classes: KVCacheManager, GpuKVCache, CpuKVCache,
+                             PrefixCache, KVBlock, KVKey, KVCache, LayerRange)
+  health           SUCCESS  (6 classes: CircuitBreaker, CircuitState,
+                             HealthEvaluator, HealthEvent, HealthThresholds,
+                             NodeHealth)
+  node             SUCCESS  (13 classes: CpuForwardPassHandler, GgufReader,
+                             LlamaConfig, LocalInferencePipeline, InferencePipeline,
+                             ForwardPassHandler, CyclicForwardPassHandler,
+                             ActivationCodec, ActivationDtype, ForwardRequest,
+                             ForwardResult, ShardContext, NodeConfig)
+  coordinator      SUCCESS  (14 classes: GenerationLoop, RequestScheduler,
+                             InferenceApiServer, SseTokenConsumer,
+                             BatchConfig, BatchEntry, FaultTolerantPipeline,
+                             RetryPolicy, PipelineUnavailableException,
+                             HealthReactor, InferenceRequest, GenerationResult,
+                             TokenConsumer, RequestPriority)
+  integration      SUCCESS  (InProcessClusterIT + ThreeNodeClusterIT +
+                             TinyLlamaLiveIT)
 
-  Tests run: 11, Failures: 0, Errors: 0, Skipped: 0
-  Total build time: ~15s
+  Unit tests:    318  (across api/registry/coordinator/node/kvcache/tokenizer/
+                       sampler/health — all @Test methods in *Test.java files)
+  Integration:   22   (InProcessClusterIT:6 + ThreeNodeClusterIT:9 +
+                       TinyLlamaLiveIT:7 — live IT skipped without MODEL_PATH)
+  Total @Test:   340
+  Failures:      0
+  Errors:        0
 
-  Module breakdown:
-    91 Java source files (~+6 new)
-    ~6700 lines total
-    52 production classes (+3: CpuForwardPassHandler, GgufReader, LlamaConfig)
-    39 test classes (+3: GgufTokenizer, ConsoleMain updated, EmbeddedNodeServer updated)
-    15 integration tests (2 suites × multi-test)
+  Production:   69 Java source files,  6310 lines
+  Test:         53 Java test files,    6711 lines
+  Grand total: 122 Java files,        13021 lines
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -819,6 +914,7 @@ sampling:
                     so all pipeline nodes fill their KV caches before decode begins
     [x] node        GgufReader — pure Java GGUF v2/v3 binary parser
                     Supports: F32, F16, BF16, Q8_0, Q4_0, Q4_K (Q4_K_M), Q6_K
+                    Q6_K bug fixed: two-halves×32 loop matches llama.cpp reference
                     No JNI, no external tools, no Python
     [x] node        LlamaConfig — extracts model hyperparams from GGUF metadata
                     (hiddenDim, numLayers, numHeads, numKvHeads, ropeTheta, ...)
@@ -834,12 +930,23 @@ sampling:
                     No separate tokenizer.model file required
                     Reads tokenizer.ggml.tokens / .scores / .token_type arrays
                     Byte fallback tokens (<0xHH>) for OOV characters
+                    decodeToken() bug fixed: ▁ (U+2581) replaced with space
+    [x] tokenizer   ChatTemplate — added tinyllama() (Zephyr format) + registered
+                    "tinyllama" and "zephyr" aliases in BUILT_IN map
+                    Bug fixed: was silently falling back to ChatML for TinyLlama,
+                    causing complete garbage output
     [x] integration EmbeddedNodeServer — uses CpuForwardPassHandler when MODEL_PATH set
                     ClusterHarness.threeNodes(modelPath) — passes model path to nodes
                     ConsoleMain — loads GgufTokenizer when MODEL_PATH set
                     End-to-end verified with TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+    [x] integration TinyLlamaLiveIT — 7 real-model integration tests
+                    Skipped via Assumptions.assumeTrue when no MODEL_PATH
+                    Covers: greeting coherence, no ▁ markers, determinism,
+                            multi-turn, float16 parity
     [ ] node        GpuForwardPassHandler (JCuda/JCublas) — matVec → cublasSgemv
     [ ] coordinator Hazelcast leader election
+    [ ] coordinator Strip EOS token </s> (token ID 2) from displayed output
+                    in GenerationLoop (cosmetic — doesn't affect generation quality)
 
   Phase 4 — Operations  [PENDING]
     [ ] health      GpuHealthProbe, ClusterHealthMonitor,
@@ -1027,3 +1134,175 @@ payload types depending on which node receives it:
 
   The switch is gated on context.hasEmbeddings() in EmbeddedNodeServer.
   No proto field change required — the same activation bytes field is reused.r
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+16. BUG FIXES AND TEST WORK (session 5, 2026-03-10)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Three correctness bugs were found during real-model end-to-end verification
+with TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf. All three caused garbage or
+visibly corrupted output.
+
+16.1  Bug 1 — Wrong chat template for TinyLlama  [FIXED]
+-----------------------------------------------
+File: tokenizer/src/main/java/io/hyperstack4j/tokenizer/ChatTemplate.java
+
+Root cause:
+  ChatTemplate.BUILT_IN did not contain "tinyllama". GenerationLoop selects
+  the template via:
+    request.modelId().toLowerCase().contains("tinyllama") ? "tinyllama" : ...
+  But ChatTemplate.forModelType("tinyllama") returned the chatml fallback.
+  TinyLlama-1.1B-Chat-v1.0 is fine-tuned on the Zephyr format:
+    <|system|>\n{system}</s>\n<|user|>\n{user}</s>\n<|assistant|>\n
+  Sending ChatML tokens sends token IDs the model never saw during training.
+  Output: complete garbage (random tokens, no coherent words).
+
+Fix:
+  Added ChatTemplate.tinyllama() static method implementing Zephyr format.
+  Registered in BUILT_IN as both "tinyllama" and "zephyr" (same instance).
+  forModelType() falls back to chatml for unknown keys — now "tinyllama"
+  resolves correctly instead of silently falling through.
+
+Verification:
+  ChatTemplateTest.tinyllama_uses_zephyr_format()
+  ChatTemplateTest.tinyllama_single_user_turn()
+  ChatTemplateTest.zephyr_alias_resolves_to_same_format_as_tinyllama()
+  ChatTemplateTest.forModelType_is_case_insensitive() (extended to cover
+    "TinyLlama" and "ZEPHYR")
+
+16.2  Bug 2 — Raw ▁ (U+2581) leaked in streaming output  [FIXED]
+-----------------------------------------------
+File: tokenizer/src/main/java/io/hyperstack4j/tokenizer/GgufTokenizer.java
+
+Root cause:
+  SentencePiece uses ▁ (U+2581 LOWER ONE EIGHTH BLOCK) as its space-prefix
+  character. GgufTokenizer.decode() correctly replaced ▁ with space after
+  joining all pieces, but decodeToken() (used in the streaming path) returned
+  raw SentencePiece pieces without replacement.
+  GenerationLoop builds fullText by accumulating decodeToken() results, so
+  every word in streaming output appeared as "▁word" instead of " word".
+  The bug only manifests in streaming; batch decode was correct.
+
+Fix:
+  decodeToken() now calls piece.replace(SP, ' ') before returning, where
+  SP = '\u2581'. The replacement is applied independently in both paths:
+  - decodeToken() for the streaming path
+  - decode() for the full-sequence batch path
+  This matches the contract: decodeToken() must return human-readable text.
+
+Verification:
+  TinyLlamaLiveIT.tokens_contain_no_raw_sentencepiece_markers()
+
+16.3  Bug 3 — Q6_K dequantization wrong for positions ≥ 32  [FIXED]
+-----------------------------------------------
+File: node/src/main/java/io/hyperstack4j/node/GgufReader.java
+
+Root cause:
+  loadQ6_K() used a flat loop:
+    for (int i = 0; i < 256; i++) {
+        int hi = i / 4;   // WRONG — this indexes qh incorrectly
+        ...
+    }
+  The correct structure (matching llama.cpp dequantize_row_q6_K) is:
+  - Each 256-element block splits into two halves of 128 elements
+  - Within each half, l runs 0..31, producing four outputs per l:
+      out[l+  0], out[l+ 32], out[l+ 64], out[l+ 96]
+  - All four outputs share a single qh byte: qh[qhBase + l]
+  The flat loop with hi=i/4 gives the right qh byte only for i=0..31.
+  From i=32 onwards, hi exceeds the correct index and reads wrong bytes.
+  Effect: all KV-projection and FFN weights in Q6_K-quantised models
+  produce incorrect values for ≥ 75% of each block's elements.
+  This is a total correctness failure for any model using Q6_K tensors.
+
+Fix:
+  Restructured to two nested loops:
+    for (int half = 0; half < 2; half++) {
+        int qlBase = half * 64;
+        int qhBase = half * 32;
+        int scBase = half * 8;
+        for (int l = 0; l < 32; l++) {
+            int qhL = qh[qhBase + l] & 0xFF;
+            // four outputs, all using qhL
+            out[outBase + l     ] = d * sc[scBase + l/16    ] * (q6bit(ql_low_l,  qhL, 0));
+            out[outBase + l + 32] = d * sc[scBase + l/16 + 2] * (q6bit(ql_low_l2, qhL, 2));
+            out[outBase + l + 64] = d * sc[scBase + l/16 + 4] * (q6bit(ql_hi_l,   qhL, 4));
+            out[outBase + l + 96] = d * sc[scBase + l/16 + 6] * (q6bit(ql_hi_l2,  qhL, 6));
+        }
+    }
+  This exactly matches the C reference.
+
+Golden-value regression test:
+  GgufReaderTest.q6k_single_block_golden_values()
+  Uses a synthetic in-memory GGUF file (built by buildMinimalGguf helper),
+  seed=42, d=0.25f, known sc[]. Expected values pre-computed from llama.cpp
+  C reference implementation running the same synthetic block.
+
+  Specific positions verified (all were wrong before the fix):
+    y[0]   =  31.50    y[1]   = -14.00    y[2]   =  98.00
+    y[3]   = -66.50    y[4]   =  63.00    y[5]   = -87.50
+    y[6]   =  70.00    y[7]   = -70.00
+    y[32]  =  15.75    ← first position wrong in old code
+    y[64]  =  38.00    ← second stride wrong in old code
+    y[96]  = -37.50    ← third stride wrong in old code
+    y[128] =   7.50    y[192] =  54.00    y[255] = -36.75
+
+16.4  Test additions (session 5)
+-----------------------------------------------
+
+ChatTemplateTest (tokenizer module) — 4 new tests:
+  tinyllama_uses_zephyr_format
+  tinyllama_single_user_turn
+  zephyr_alias_resolves_to_same_format_as_tinyllama
+  forModelType_is_case_insensitive (extended to cover TinyLlama and ZEPHYR)
+
+GgufReaderTest (node module) — NEW FILE, 6 tests:
+  Uses buildMinimalGguf() helper to construct valid GGUF v3 files in memory
+  (no real model file required). Tests the exact byte-reading + dequant path.
+  f16ToF32_exact_values
+  q6k_single_block_golden_values  ← primary Q6_K regression anchor
+  q6k_output_range_bounded
+  q6k_two_blocks
+  q4k_all_zero_quants
+  q4k_nibble_split
+
+TinyLlamaLiveIT (integration module) — NEW FILE, 7 tests:
+  Real-model IT. All 7 tests wrapped in Assumptions.assumeTrue — skipped
+  cleanly if -Dit.model.path is not set. See §9.3 for full test list.
+
+GenerationLoopTest (coordinator module) — 2 tests restored from comments:
+  stops_at_eos_token
+  stops_at_stop_token
+
+  These were commented out because they didn't account for the prefill phase.
+  GenerationLoop.generate() calls pipeline.forward() once per prompt token
+  up to promptLen-2 (prefill), consuming entries from the sequence-based
+  StubInferencePipeline before the decode loop starts.
+
+  Root cause of the original failure:
+    Old code used modelId="model" (→ ChatML template).
+    ChatML + ChatMessage.user("hi") → 3 tokens → 2 prefill calls.
+    Sequence [42, 43, eos] had both 42 and 43 consumed by prefill calls
+    before any decode step ran.
+
+  Fix:
+    modelId="llama3-8b" (Llama3 template + "hi" → 2 tokens → 1 prefill call).
+    Sequences prefixed with DEFAULT_TOKEN as a named placeholder for the
+    single prefill call:
+      [DEFAULT_TOKEN, 42, 43, eos]       for stops_at_eos_token
+      [DEFAULT_TOKEN, 42, stopToken, 43] for stops_at_stop_token
+    Added promptTokens()==2 sanity assertion so future template changes
+    fail loudly rather than silently shifting the sequence offset.
+
+16.5  ThreeNodeClusterIT cleanup
+-----------------------------------------------
+Removed a stale /* ... */ commented-out block referencing the obsolete
+StubForwardPassHandler. Replaced with a comment pointing to TinyLlamaLiveIT
+as the authoritative real-model test location.
+
+16.6  Pending minor item
+-----------------------------------------------
+  [ ] Strip EOS token </s> (token ID 2) from displayed output in GenerationLoop.
+      Currently the EOS token halts generation but its decoded piece (empty
+      string for StubTokenizer, "</s>" for GgufTokenizer) may appear in
+      fullText. Cosmetic — does not affect generation correctness or token
+      counts. Fix: break before appending the EOS piece.

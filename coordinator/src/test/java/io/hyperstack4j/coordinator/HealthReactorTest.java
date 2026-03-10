@@ -20,158 +20,157 @@ import io.hyperstack4j.tokenizer.StubTokenizer;
 
 class HealthReactorTest {
 
-    private static final int VOCAB = 1000;
+	private static final int VOCAB = 1000;
 
-    private CircuitBreaker cb1, cb2;
-    private FaultTolerantPipeline pipeline;
-    private HealthReactor reactor;
+	private CircuitBreaker cb1, cb2;
+	private FaultTolerantPipeline pipeline;
+	private HealthReactor reactor;
 
-    @BeforeEach
-    void setUp() {
-        cb1 = CircuitBreaker.forNode("n1");
-        cb2 = CircuitBreaker.forNode("n2");
+	@BeforeEach
+	void setUp() {
+		cb1 = CircuitBreaker.forNode("n1");
+		cb2 = CircuitBreaker.forNode("n2");
 
-        InferencePipeline stub = new InferencePipeline() {
-            @Override public float[] forward(String id, int[] t, int s) {
-                float[] l = new float[VOCAB]; l[1] = 100f; return l;
-            }
-            @Override public int vocabSize() { return VOCAB; }
-        };
+		InferencePipeline stub = new InferencePipeline() {
+			@Override
+			public float[] forward(String id, int[] t, int s) {
+				float[] l = new float[VOCAB];
+				l[1] = 100f;
+				return l;
+			}
 
-        pipeline = new FaultTolerantPipeline(
-                List.of(
-                        new FaultTolerantPipeline.NodePipeline("n1", stub, cb1),
-                        new FaultTolerantPipeline.NodePipeline("n2", stub, cb2)
-                ),
-                RetryPolicy.once());
+			@Override
+			public int vocabSize() {
+				return VOCAB;
+			}
+		};
 
-        reactor = new HealthReactor(HealthThresholds.defaults(), pipeline);
-    }
+		pipeline = new FaultTolerantPipeline(List.of(new FaultTolerantPipeline.NodePipeline("n1", stub, cb1),
+				new FaultTolerantPipeline.NodePipeline("n2", stub, cb2)), RetryPolicy.once());
 
-    private NodeHealth probe(String nodeId, double pressure, long ageMs) {
-        Instant sampledAt = Instant.now().minusMillis(ageMs);
-        return new NodeHealth(nodeId, pressure, 100_000L, 1_000_000L, 60.0, 50.0, sampledAt);
-    }
+		reactor = new HealthReactor(HealthThresholds.defaults(), pipeline);
+	}
 
-    // ── Normal probes ──────────────────────────────────────────────────────
+	private NodeHealth probe(String nodeId, double pressure, long ageMs) {
+		Instant sampledAt = Instant.now().minusMillis(ageMs);
+		return new NodeHealth(nodeId, pressure, 100_000L, 1_000_000L, 60.0, 50.0, sampledAt);
+	}
 
-    @Test
-    void healthy_probe_leaves_circuit_closed() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        assertThat(cb1.isCallPermitted()).isTrue();
-    }
+	// ── Normal probes ──────────────────────────────────────────────────────
 
-    @Test
-    void warning_probe_leaves_circuit_closed() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish baseline
-        reactor.onHealthProbe(probe("n1", 0.93, 0)); // WARNING but not CRITICAL
-        assertThat(cb1.isCallPermitted()).isTrue();
-    }
+	@Test
+	void healthy_probe_leaves_circuit_closed() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		assertThat(cb1.isCallPermitted()).isTrue();
+	}
 
-    // ── VRAM_CRITICAL ──────────────────────────────────────────────────────
+	@Test
+	void warning_probe_leaves_circuit_closed() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish baseline
+		reactor.onHealthProbe(probe("n1", 0.93, 0)); // WARNING but not CRITICAL
+		assertThat(cb1.isCallPermitted()).isTrue();
+	}
 
-    @Test
-    void critical_probe_opens_circuit_for_that_node() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish baseline
-        reactor.onHealthProbe(probe("n1", 0.99, 0)); // CRITICAL
+	// ── VRAM_CRITICAL ──────────────────────────────────────────────────────
 
-        assertThat(cb1.isCallPermitted()).isFalse();
-        assertThat(cb2.isCallPermitted()).isTrue(); // other node unaffected
-    }
+	@Test
+	void critical_probe_opens_circuit_for_that_node() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish baseline
+		reactor.onHealthProbe(probe("n1", 0.99, 0)); // CRITICAL
 
-    @Test
-    void critical_event_only_affects_its_node() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        reactor.onHealthProbe(probe("n1", 0.99, 0));
+		assertThat(cb1.isCallPermitted()).isFalse();
+		assertThat(cb2.isCallPermitted()).isTrue(); // other node unaffected
+	}
 
-        // n2 stays healthy
-        assertThat(cb2.isCallPermitted()).isTrue();
-        assertThat(pipeline.availableNodeCount()).isEqualTo(1);
-    }
+	@Test
+	void critical_event_only_affects_its_node() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		reactor.onHealthProbe(probe("n1", 0.99, 0));
 
-    // ── NODE_STALE ─────────────────────────────────────────────────────────
+		// n2 stays healthy
+		assertThat(cb2.isCallPermitted()).isTrue();
+		assertThat(pipeline.availableNodeCount()).isEqualTo(1);
+	}
 
-    @Test
-    void stale_probe_opens_circuit() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0));         // baseline
-        reactor.onHealthProbe(probe("n1", 0.5, 20_000));    // 20s stale (threshold=15s)
+	// ── NODE_STALE ─────────────────────────────────────────────────────────
 
-        assertThat(cb1.isCallPermitted()).isFalse();
-    }
+	@Test
+	void stale_probe_opens_circuit() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // baseline
+		reactor.onHealthProbe(probe("n1", 0.5, 20_000)); // 20s stale (threshold=15s)
 
-    @Test
-    void onNodeRemoved_opens_circuit_and_forgets_state() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish state
+		assertThat(cb1.isCallPermitted()).isFalse();
+	}
 
-        reactor.onNodeRemoved("n1");
+	@Test
+	void onNodeRemoved_opens_circuit_and_forgets_state() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // establish state
 
-        assertThat(cb1.isCallPermitted()).isFalse();
-        // After removing and re-adding: a fresh fresh probe should not emit RECOVERED
-        // (evaluator forgot n1 state)
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        // Circuit is still open (reset happens via NODE_RECOVERED only, not here)
-    }
+		reactor.onNodeRemoved("n1");
 
-    // ── NODE_RECOVERED ─────────────────────────────────────────────────────
+		assertThat(cb1.isCallPermitted()).isFalse();
+		// After removing and re-adding: a fresh fresh probe should not emit RECOVERED
+		// (evaluator forgot n1 state)
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		// Circuit is still open (reset happens via NODE_RECOVERED only, not here)
+	}
 
-    @Test
-    void recovered_probe_resets_circuit_after_critical() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        reactor.onHealthProbe(probe("n1", 0.99, 0));   // CRITICAL → circuit OPEN
-        assertThat(cb1.isCallPermitted()).isFalse();
+	// ── NODE_RECOVERED ─────────────────────────────────────────────────────
 
-        reactor.onHealthProbe(probe("n1", 0.5, 0));    // back to OK → RECOVERED
-        assertThat(cb1.isCallPermitted()).isTrue();
-    }
+	@Test
+	void recovered_probe_resets_circuit_after_critical() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		reactor.onHealthProbe(probe("n1", 0.99, 0)); // CRITICAL → circuit OPEN
+		assertThat(cb1.isCallPermitted()).isFalse();
 
-    @Test
-    void recovered_probe_resets_circuit_after_stale() {
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        reactor.onHealthProbe(probe("n1", 0.5, 20_000)); // STALE → circuit OPEN
-        assertThat(cb1.isCallPermitted()).isFalse();
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // back to OK → RECOVERED
+		assertThat(cb1.isCallPermitted()).isTrue();
+	}
 
-        reactor.onHealthProbe(probe("n1", 0.5, 0));      // fresh again → RECOVERED
-        assertThat(cb1.isCallPermitted()).isTrue();
-    }
+	@Test
+	void recovered_probe_resets_circuit_after_stale() {
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		reactor.onHealthProbe(probe("n1", 0.5, 20_000)); // STALE → circuit OPEN
+		assertThat(cb1.isCallPermitted()).isFalse();
 
-    // ── Scheduler shutdown ─────────────────────────────────────────────────
+		reactor.onHealthProbe(probe("n1", 0.5, 0)); // fresh again → RECOVERED
+		assertThat(cb1.isCallPermitted()).isTrue();
+	}
 
-    @Test
-    void scheduler_shutdown_called_when_fully_unavailable() {
-        GenerationLoop loop = new GenerationLoop(
-                new StubTokenizer(),
-                Sampler.create(),
-                pipeline,
-                new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000)));
-        RequestScheduler scheduler = new RequestScheduler(10, loop);
+	// ── Scheduler shutdown ─────────────────────────────────────────────────
 
-        HealthReactor reactorWithScheduler = new HealthReactor(
-                HealthThresholds.defaults(), pipeline, scheduler);
+	@Test
+	void scheduler_shutdown_called_when_fully_unavailable() {
+		GenerationLoop loop = new GenerationLoop(new StubTokenizer(), Sampler.create(), pipeline,
+				new KVCacheManager(new GpuKVCache(64 * 1024 * 1024), new CpuKVCache(1000)));
+		RequestScheduler scheduler = new RequestScheduler(10, loop);
 
-        // Force CRITICAL on both nodes — fully unavailable
-        reactorWithScheduler.onHealthProbe(probe("n1", 0.5, 0));
-        reactorWithScheduler.onHealthProbe(probe("n1", 0.99, 0)); // trips n1
-        reactorWithScheduler.onHealthProbe(probe("n2", 0.5, 0));
-        reactorWithScheduler.onHealthProbe(probe("n2", 0.99, 0)); // trips n2
+		HealthReactor reactorWithScheduler = new HealthReactor(HealthThresholds.defaults(), pipeline, scheduler);
 
-        assertThat(pipeline.isFullyUnavailable()).isTrue();
-        // scheduler.running is private but we verify indirectly — no exception thrown
-        // and the pipeline truly has zero available nodes
-        assertThat(pipeline.availableNodeCount()).isEqualTo(0);
-    }
+		// Force CRITICAL on both nodes — fully unavailable
+		reactorWithScheduler.onHealthProbe(probe("n1", 0.5, 0));
+		reactorWithScheduler.onHealthProbe(probe("n1", 0.99, 0)); // trips n1
+		reactorWithScheduler.onHealthProbe(probe("n2", 0.5, 0));
+		reactorWithScheduler.onHealthProbe(probe("n2", 0.99, 0)); // trips n2
 
-    // ── Multi-node independence ────────────────────────────────────────────
+		assertThat(pipeline.isFullyUnavailable()).isTrue();
+		// scheduler.running is private but we verify indirectly — no exception thrown
+		// and the pipeline truly has zero available nodes
+		assertThat(pipeline.availableNodeCount()).isEqualTo(0);
+	}
 
-    @Test
-    void independent_probes_for_different_nodes_do_not_interfere() {
-        // n1 healthy, n2 critical
-        reactor.onHealthProbe(probe("n1", 0.5, 0));
-        reactor.onHealthProbe(probe("n2", 0.5, 0));
-        reactor.onHealthProbe(probe("n2", 0.99, 0));
+	// ── Multi-node independence ────────────────────────────────────────────
 
-        assertThat(cb1.isCallPermitted()).isTrue();
-        assertThat(cb2.isCallPermitted()).isFalse();
-        assertThat(pipeline.isFullyUnavailable()).isFalse();
-        assertThat(pipeline.availableNodeCount()).isEqualTo(1);
-    }
+	@Test
+	void independent_probes_for_different_nodes_do_not_interfere() {
+		// n1 healthy, n2 critical
+		reactor.onHealthProbe(probe("n1", 0.5, 0));
+		reactor.onHealthProbe(probe("n2", 0.5, 0));
+		reactor.onHealthProbe(probe("n2", 0.99, 0));
+
+		assertThat(cb1.isCallPermitted()).isTrue();
+		assertThat(cb2.isCallPermitted()).isFalse();
+		assertThat(pipeline.isFullyUnavailable()).isFalse();
+		assertThat(pipeline.availableNodeCount()).isEqualTo(1);
+	}
 }

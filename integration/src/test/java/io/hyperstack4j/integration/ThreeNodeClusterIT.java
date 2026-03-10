@@ -35,269 +35,206 @@ import io.hyperstack4j.tokenizer.StubTokenizer;
  * ProcessPipelineClient routes forward passes across them in pipeline order.
  * GenerationLoop + RequestScheduler run in this (coordinator) JVM.
  *
- * Memory budget for 16 GB host:
- *   3 node JVMs × -Xmx4g  = 12 GB
- *   coordinator JVM -Xmx2g =  2 GB
- *   OS + overhead           =  2 GB
+ * Memory budget for 16 GB host: 3 node JVMs × -Xmx4g = 12 GB coordinator JVM
+ * -Xmx2g = 2 GB OS + overhead = 2 GB
  *
- * Run all ITs:  mvn verify -pl integration
- * Run only this: mvn verify -pl integration -Dit.test=ThreeNodeClusterIT
+ * Run all ITs: mvn verify -pl integration Run only this: mvn verify -pl
+ * integration -Dit.test=ThreeNodeClusterIT
  */
 @DisplayName("Three-Node Cluster (3 forked JVMs)")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class ThreeNodeClusterIT {
 
-    private static ClusterHarness        harness;
-    private static ProcessPipelineClient pipeline;
-    private static GenerationLoop        generationLoop;
-    private static RequestScheduler      scheduler;
+	private static ClusterHarness harness;
+	private static ProcessPipelineClient pipeline;
+	private static GenerationLoop generationLoop;
+	private static RequestScheduler scheduler;
 
-    @BeforeAll
-    static void startCluster() throws Exception {
-        harness = ClusterHarness.threeNodes();
-        harness.start();
+	@BeforeAll
+	static void startCluster() throws Exception {
+		harness = ClusterHarness.threeNodes();
+		harness.start();
 
-        pipeline = harness.pipelineClient();
+		pipeline = harness.pipelineClient();
 
-        generationLoop = new GenerationLoop(
-                new StubTokenizer(),
-                Sampler.create(),
-                pipeline,
-                new KVCacheManager(
-                        new GpuKVCache(512L * 1024 * 1024),
-                        new CpuKVCache(4096)
-                )
-        );
-        scheduler = new RequestScheduler(100, generationLoop);
-    }
+		generationLoop = new GenerationLoop(new StubTokenizer(), Sampler.create(), pipeline,
+				new KVCacheManager(new GpuKVCache(512L * 1024 * 1024), new CpuKVCache(4096)));
+		scheduler = new RequestScheduler(100, generationLoop);
+	}
 
-    @AfterAll
-    static void stopCluster() throws Exception {
-        if (harness != null) harness.stop();
-    }
+	@AfterAll
+	static void stopCluster() throws Exception {
+		if (harness != null)
+			harness.stop();
+	}
 
-    // ── Tests ─────────────────────────────────────────────────────────────────
+	// ── Tests ─────────────────────────────────────────────────────────────────
 
-    @Test
-    @Order(1)
-    @DisplayName("All 3 node processes are alive after startup")
-    void allNodesAlive() {
-        assertThat(pipeline).isNotNull();
-        assertThat(pipeline.vocabSize()).isEqualTo(EmbeddedNodeServer.VOCAB_SIZE);
-    }
-/* making StubForwardPassHandler obsolete
-    @Test
-    @Order(2)
-    @DisplayName("Single forward pass completes across all 3 JVMs")
-    void singleForwardPassAcrossJvms() {
-        float[] logits = pipeline.forward("cross-jvm-001", new int[]{1, 2, 3}, 0);
+	@Test
+	@Order(1)
+	@DisplayName("All 3 node processes are alive after startup")
+	void allNodesAlive() {
+		assertThat(pipeline).isNotNull();
+		assertThat(pipeline.vocabSize()).isEqualTo(EmbeddedNodeServer.VOCAB_SIZE);
+	}
 
-        assertThat(logits).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
+	// Order 2 is reserved — single-forward-pass with real weights is covered by
+	// TinyLlamaLiveIT (requires the model file; skipped here since this class
+	// uses stub CyclicForwardPassHandlers via the no-arg
+	// ClusterHarness.threeNodes()).
+	@Test
+	@Order(3)
+	@DisplayName("GenerationLoop generates tokens via gRPC pipeline")
+	void generationLoopViaGrpc() {
+		int maxTokens = 8;
+		InferenceRequest request = InferenceRequest.of("tinyllama",
+				List.of(ChatMessage.user("Write a haiku about distributed systems.")),
+				SamplingParams.defaults().withMaxTokens(maxTokens), RequestPriority.NORMAL);
 
-        // CyclicForwardPassHandler picks winner = STUB_FIRST + (startPos % 7).
-        // This call uses startPos=0, so winner is always STUB_FIRST (3).
-        float max = Float.NEGATIVE_INFINITY;
-        int maxIdx = -1;
-        for (int i = 0; i < logits.length; i++) {
-            if (logits[i] > max) { max = logits[i]; maxIdx = i; }
-        }
-        assertThat(maxIdx).isBetween(3, 9); // must be a pre-registered stub word
-        for (float l : logits) assertThat(max).isGreaterThanOrEqualTo(l);
-    }
-*/
-    @Test
-    @Order(3)
-    @DisplayName("GenerationLoop generates tokens via gRPC pipeline")
-    void generationLoopViaGrpc() {
-        int maxTokens = 8;
-        InferenceRequest request = InferenceRequest.of(
-                "tinyllama",
-                List.of(ChatMessage.user("Write a haiku about distributed systems.")),
-                SamplingParams.defaults().withMaxTokens(maxTokens),
-                RequestPriority.NORMAL
-        );
+		List<String> pieces = new ArrayList<>();
+		GenerationResult result = generationLoop.generate(request, (piece, tokenId, step) -> pieces.add(piece));
 
-        List<String> pieces = new ArrayList<>();
-        GenerationResult result = generationLoop.generate(
-                request, (piece, tokenId, step) -> pieces.add(piece));
+		assertThat(result.generatedTokens()).isGreaterThan(0).isLessThanOrEqualTo(maxTokens);
 
-        assertThat(result.generatedTokens())
-                .isGreaterThan(0)
-                .isLessThanOrEqualTo(maxTokens);
+		assertThat(pieces).hasSameSizeAs(result.tokenIds());
+		assertThat(result.latency()).isPositive();
 
-        assertThat(pieces).hasSameSizeAs(result.tokenIds());
-        assertThat(result.latency()).isPositive();
+		System.out.printf("Generated: \"%s\"  tokens=%d  latency=%d ms%n", result.text(), result.generatedTokens(),
+				result.latency().toMillis());
+	}
 
-        System.out.printf("Generated: \"%s\"  tokens=%d  latency=%d ms%n",
-                result.text(), result.generatedTokens(), result.latency().toMillis());
-    }
+	@Test
+	@Order(4)
+	@DisplayName("Scheduler dispatches 4 concurrent requests via virtual threads")
+	void schedulerConcurrentRequests() throws InterruptedException {
+		int count = 4;
+		List<GenerationResult> results = new CopyOnWriteArrayList<>();
+		List<Thread> threads = new ArrayList<>();
 
-    @Test
-    @Order(4)
-    @DisplayName("Scheduler dispatches 4 concurrent requests via virtual threads")
-    void schedulerConcurrentRequests() throws InterruptedException {
-        int count = 4;
-        List<GenerationResult> results = new CopyOnWriteArrayList<>();
-        List<Thread> threads = new ArrayList<>();
+		for (int i = 0; i < count; i++) {
+			final String id = "sched-" + i;
+			Thread t = Thread.ofVirtual().start(() -> {
+				InferenceRequest req = InferenceRequest.of("tinyllama", List.of(ChatMessage.user("Request " + id)),
+						SamplingParams.defaults().withMaxTokens(4), RequestPriority.NORMAL);
+				results.add(scheduler.submitAndWait(req));
+			});
+			threads.add(t);
+		}
 
-        for (int i = 0; i < count; i++) {
-            final String id = "sched-" + i;
-            Thread t = Thread.ofVirtual().start(() -> {
-                InferenceRequest req = InferenceRequest.of(
-                        "tinyllama",
-                        List.of(ChatMessage.user("Request " + id)),
-                        SamplingParams.defaults().withMaxTokens(4),
-                        RequestPriority.NORMAL
-                );
-                results.add(scheduler.submitAndWait(req));
-            });
-            threads.add(t);
-        }
+		for (Thread t : threads)
+			t.join(30_000);
 
-        for (Thread t : threads) t.join(30_000);
+		assertThat(results).hasSize(count);
+		assertThat(results).allSatisfy(r -> assertThat(r.generatedTokens()).isGreaterThan(0));
+	}
 
-        assertThat(results).hasSize(count);
-        assertThat(results).allSatisfy(r -> assertThat(r.generatedTokens()).isGreaterThan(0));
-    }
+	@Test
+	@Order(5)
+	@DisplayName("Repeated identical prompts use prefix cache")
+	void prefixCacheOnRepeat() {
+		SamplingParams params = SamplingParams.defaults().withMaxTokens(5);
+		List<ChatMessage> msgs = List.of(ChatMessage.user("What is pipeline parallelism?"));
 
-    @Test
-    @Order(5)
-    @DisplayName("Repeated identical prompts use prefix cache")
-    void prefixCacheOnRepeat() {
-        SamplingParams params   = SamplingParams.defaults().withMaxTokens(5);
-        List<ChatMessage> msgs  = List.of(ChatMessage.user("What is pipeline parallelism?"));
+		GenerationResult r1 = generationLoop.generate(
+				InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL), TokenConsumer.discard());
+		GenerationResult r2 = generationLoop.generate(
+				InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL), TokenConsumer.discard());
 
-        GenerationResult r1 = generationLoop.generate(
-                InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL),
-                TokenConsumer.discard());
-        GenerationResult r2 = generationLoop.generate(
-                InferenceRequest.of("tinyllama", msgs, params, RequestPriority.NORMAL),
-                TokenConsumer.discard());
+		assertThat(r1.generatedTokens()).isEqualTo(r2.generatedTokens());
+		assertThat(r1.promptTokens()).isEqualTo(r2.promptTokens());
 
-        assertThat(r1.generatedTokens()).isEqualTo(r2.generatedTokens());
-        assertThat(r1.promptTokens()).isEqualTo(r2.promptTokens());
+		System.out.printf("Cold: %d ms  Warm: %d ms%n", r1.latency().toMillis(), r2.latency().toMillis());
+	}
 
-        System.out.printf("Cold: %d ms  Warm: %d ms%n",
-                r1.latency().toMillis(), r2.latency().toMillis());
-    }
+	@Test
+	@Order(6)
+	@DisplayName("HIGH priority request completes without starvation")
+	void highPriorityCompletes() {
+		InferenceRequest high = InferenceRequest.of("tinyllama", List.of(ChatMessage.user("Urgent query")),
+				SamplingParams.defaults().withMaxTokens(2), RequestPriority.HIGH);
 
-    @Test
-    @Order(6)
-    @DisplayName("HIGH priority request completes without starvation")
-    void highPriorityCompletes() {
-        InferenceRequest high = InferenceRequest.of(
-                "tinyllama",
-                List.of(ChatMessage.user("Urgent query")),
-                SamplingParams.defaults().withMaxTokens(2),
-                RequestPriority.HIGH
-        );
+		GenerationResult result = scheduler.submitAndWait(high);
+		assertThat(result.generatedTokens()).isGreaterThan(0);
+	}
 
-        GenerationResult result = scheduler.submitAndWait(high);
-        assertThat(result.generatedTokens()).isGreaterThan(0);
-    }
+	// ── Activation compression tests ──────────────────────────────────────────
 
-    // ── Activation compression tests ──────────────────────────────────────────
+	@Test
+	@Order(7)
+	@DisplayName("FLOAT16 compressed pipeline produces same winner token as FLOAT32")
+	void float16PipelineProducesSameWinnerToken() throws InterruptedException {
+		ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(harness.nodeAddresses(),
+				EmbeddedNodeServer.VOCAB_SIZE, io.hyperstack4j.node.ActivationDtype.FLOAT16);
+		try {
+			float[] logitsF32 = pipeline.forward("cmp-f32", new int[] { 1, 2, 3 }, 0);
+			float[] logitsF16 = f16Pipeline.forward("cmp-f16", new int[] { 1, 2, 3 }, 0);
 
-    @Test
-    @Order(7)
-    @DisplayName("FLOAT16 compressed pipeline produces same winner token as FLOAT32")
-    void float16PipelineProducesSameWinnerToken() throws InterruptedException {
-        ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(
-                harness.nodeAddresses(),
-                EmbeddedNodeServer.VOCAB_SIZE,
-                io.hyperstack4j.node.ActivationDtype.FLOAT16
-        );
-        try {
-            float[] logitsF32 = pipeline.forward("cmp-f32", new int[]{1, 2, 3}, 0);
-            float[] logitsF16 = f16Pipeline.forward("cmp-f16", new int[]{1, 2, 3}, 0);
+			assertThat(logitsF16).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
 
-            assertThat(logitsF16).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
+			int winnerF32 = argmax(logitsF32);
+			int winnerF16 = argmax(logitsF16);
+			assertThat(winnerF16).as("FLOAT16 pipeline should pick the same winner token as FLOAT32")
+					.isEqualTo(winnerF32);
 
-            int winnerF32 = argmax(logitsF32);
-            int winnerF16 = argmax(logitsF16);
-            assertThat(winnerF16)
-                    .as("FLOAT16 pipeline should pick the same winner token as FLOAT32")
-                    .isEqualTo(winnerF32);
+			System.out.printf("FLOAT16 pipeline: winner=%d (same as FLOAT32=%d)%n", winnerF16, winnerF32);
+		} finally {
+			f16Pipeline.shutdown();
+		}
+	}
 
-            System.out.printf("FLOAT16 pipeline: winner=%d (same as FLOAT32=%d)%n",
-                    winnerF16, winnerF32);
-        } finally {
-            f16Pipeline.shutdown();
-        }
-    }
+	@Test
+	@Order(8)
+	@DisplayName("INT8 compressed pipeline produces same winner token as FLOAT32")
+	void int8PipelineProducesSameWinnerToken() throws InterruptedException {
+		ProcessPipelineClient i8Pipeline = new ProcessPipelineClient(harness.nodeAddresses(),
+				EmbeddedNodeServer.VOCAB_SIZE, io.hyperstack4j.node.ActivationDtype.INT8);
+		try {
+			float[] logitsF32 = pipeline.forward("cmp-f32-2", new int[] { 1, 2, 3 }, 0);
+			float[] logitsI8 = i8Pipeline.forward("cmp-i8", new int[] { 1, 2, 3 }, 0);
 
-    @Test
-    @Order(8)
-    @DisplayName("INT8 compressed pipeline produces same winner token as FLOAT32")
-    void int8PipelineProducesSameWinnerToken() throws InterruptedException {
-        ProcessPipelineClient i8Pipeline = new ProcessPipelineClient(
-                harness.nodeAddresses(),
-                EmbeddedNodeServer.VOCAB_SIZE,
-                io.hyperstack4j.node.ActivationDtype.INT8
-        );
-        try {
-            float[] logitsF32 = pipeline.forward("cmp-f32-2", new int[]{1, 2, 3}, 0);
-            float[] logitsI8  = i8Pipeline.forward("cmp-i8", new int[]{1, 2, 3}, 0);
+			assertThat(logitsI8).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
 
-            assertThat(logitsI8).hasSize(EmbeddedNodeServer.VOCAB_SIZE);
+			int winnerF32 = argmax(logitsF32);
+			int winnerI8 = argmax(logitsI8);
+			assertThat(winnerI8).as("INT8 pipeline should pick the same winner token as FLOAT32").isEqualTo(winnerF32);
 
-            int winnerF32 = argmax(logitsF32);
-            int winnerI8  = argmax(logitsI8);
-            assertThat(winnerI8)
-                    .as("INT8 pipeline should pick the same winner token as FLOAT32")
-                    .isEqualTo(winnerF32);
+			System.out.printf("INT8 pipeline: winner=%d (same as FLOAT32=%d)%n", winnerI8, winnerF32);
+		} finally {
+			i8Pipeline.shutdown();
+		}
+	}
 
-            System.out.printf("INT8 pipeline: winner=%d (same as FLOAT32=%d)%n",
-                    winnerI8, winnerF32);
-        } finally {
-            i8Pipeline.shutdown();
-        }
-    }
+	@Test
+	@Order(9)
+	@DisplayName("GenerationLoop produces tokens via FLOAT16 compressed pipeline")
+	void generationLoopWithFloat16Compression() throws InterruptedException {
+		ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(harness.nodeAddresses(),
+				EmbeddedNodeServer.VOCAB_SIZE, io.hyperstack4j.node.ActivationDtype.FLOAT16);
+		try {
+			GenerationLoop f16Loop = new GenerationLoop(new StubTokenizer(), Sampler.create(), f16Pipeline,
+					new KVCacheManager(new GpuKVCache(512L * 1024 * 1024), new CpuKVCache(256)));
 
-    @Test
-    @Order(9)
-    @DisplayName("GenerationLoop produces tokens via FLOAT16 compressed pipeline")
-    void generationLoopWithFloat16Compression() throws InterruptedException {
-        ProcessPipelineClient f16Pipeline = new ProcessPipelineClient(
-                harness.nodeAddresses(),
-                EmbeddedNodeServer.VOCAB_SIZE,
-                io.hyperstack4j.node.ActivationDtype.FLOAT16
-        );
-        try {
-            GenerationLoop f16Loop = new GenerationLoop(
-                    new StubTokenizer(),
-                    Sampler.create(),
-                    f16Pipeline,
-                    new KVCacheManager(
-                            new GpuKVCache(512L * 1024 * 1024),
-                            new CpuKVCache(256)
-                    )
-            );
+			InferenceRequest req = InferenceRequest.of("tinyllama", List.of(ChatMessage.user("Hello compressed world")),
+					SamplingParams.defaults().withMaxTokens(5), RequestPriority.NORMAL);
 
-            InferenceRequest req = InferenceRequest.of(
-                    "tinyllama",
-                    List.of(ChatMessage.user("Hello compressed world")),
-                    SamplingParams.defaults().withMaxTokens(5),
-                    RequestPriority.NORMAL
-            );
+			GenerationResult result = f16Loop.generate(req, TokenConsumer.discard());
 
-            GenerationResult result = f16Loop.generate(req, TokenConsumer.discard());
+			assertThat(result.generatedTokens()).isGreaterThan(0);
+			System.out.printf("FLOAT16 GenerationLoop: tokens=%d latency=%d ms%n", result.generatedTokens(),
+					result.latency().toMillis());
+		} finally {
+			f16Pipeline.shutdown();
+		}
+	}
 
-            assertThat(result.generatedTokens()).isGreaterThan(0);
-            System.out.printf("FLOAT16 GenerationLoop: tokens=%d latency=%d ms%n",
-                    result.generatedTokens(), result.latency().toMillis());
-        } finally {
-            f16Pipeline.shutdown();
-        }
-    }
+	// ── Helper ────────────────────────────────────────────────────────────────
 
-    // ── Helper ────────────────────────────────────────────────────────────────
-
-    private static int argmax(float[] logits) {
-        int best = 0;
-        for (int i = 1; i < logits.length; i++) {
-            if (logits[i] > logits[best]) best = i;
-        }
-        return best;
-    }
+	private static int argmax(float[] logits) {
+		int best = 0;
+		for (int i = 1; i < logits.length; i++) {
+			if (logits[i] > logits[best])
+				best = i;
+		}
+		return best;
+	}
 }

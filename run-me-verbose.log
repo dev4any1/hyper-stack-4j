@@ -1,0 +1,478 @@
+robocop@robot:~/dev/hyper/hyper-stack-4j$ MODEL_PATH=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf MAX_TOKENS=10 TEMPERATURE=0.7 ./run-me.sh cluster --verbose
+▶ Building integration module (test-compile)...
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper (file:/usr/share/maven/lib/guava.jar)
+WARNING: Please consider reporting this to the maintainers of class com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] hyper-stack-4j                                                     [pom]
+[INFO] api                                                                [jar]
+[INFO] registry                                                           [jar]
+[INFO] kvcache                                                            [jar]
+[INFO] health                                                             [jar]
+[INFO] node                                                               [jar]
+[INFO] tokenizer                                                          [jar]
+[INFO] sampler                                                            [jar]
+[INFO] coordinator                                                        [jar]
+[INFO] integration                                                        [jar]
+[INFO] 
+[INFO] -------------------< io.hyperstack4j:hyper-stack-4j >-------------------
+[INFO] Building hyper-stack-4j 0.1.0-SNAPSHOT                            [1/10]
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] ------------------------< io.hyperstack4j:api >-------------------------
+[INFO] Building api 0.1.0-SNAPSHOT                                       [2/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- os-maven-plugin:1.7.1:detect (default) @ api ---
+[INFO] ------------------------------------------------------------------------
+[INFO] Detecting the operating system and CPU architecture
+[INFO] ------------------------------------------------------------------------
+[INFO] os.detected.name: linux
+[INFO] os.detected.arch: x86_64
+[INFO] os.detected.bitness: 64
+[INFO] os.detected.version: 6.14
+[INFO] os.detected.version.major: 6
+[INFO] os.detected.version.minor: 14
+[INFO] os.detected.release: linuxmint
+[INFO] os.detected.release.version: 22.2
+[INFO] os.detected.release.like.linuxmint: true
+[INFO] os.detected.release.like.ubuntu: true
+[INFO] os.detected.release.like.debian: true
+[INFO] os.detected.classifier: linux-x86_64
+[INFO] 
+[INFO] --- openapi-generator-maven-plugin:7.5.0:generate (generate-openapi) @ api ---
+[INFO] Generating with dryRun=false
+[INFO] No .openapi-generator-ignore file found.
+[INFO] OpenAPI Generator: jaxrs-spec (server)
+[INFO] Generator 'jaxrs-spec' is considered stable.
+[INFO] Environment variable JAVA_POST_PROCESS_FILE not defined so the Java code may not be properly formatted. To define it, try 'export JAVA_POST_PROCESS_FILE="/usr/local/bin/clang-format -i"' (Linux/Mac)
+[INFO] NOTE: To enable file post-processing, 'enablePostProcessFile' must be set to `true` (--enable-post-process-file for CLI).
+[INFO] Processing operation infer
+[INFO] Processing operation inferStream
+[INFO] Processing operation listModels
+[INFO] Processing operation loadModel
+[INFO] Processing operation getModel
+[INFO] Processing operation unloadModel
+[INFO] Processing operation getClusterHealth
+[INFO] Processing operation listNodes
+[INFO] Processing operation getNode
+[INFO] Processing operation getShardMap
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ApiError.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ChatMessage.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ClusterHealth.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/InferenceRequest.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/InferenceResponse.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/LayerRange.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/LoadModelRequest.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ModelDescriptor.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ModelList.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/NodeDescriptor.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/NodeList.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/RetryableError.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/SamplingConfig.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ShardAssignment.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/ShardMap.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/model/TokenEvent.java
+[WARNING] Ignoring complex example on request body
+[WARNING] Ignoring complex example on request body
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/ClusterApi.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/InferenceApi.java
+[INFO] writing file /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/ModelsApi.java
+[INFO] Skipping generation of Webhooks.
+[INFO] Skipping generation of supporting files.
+################################################################################
+# Thanks for using OpenAPI Generator.                                          #
+# Please consider donation to help us maintain this project 🙏                 #
+# https://opencollective.com/openapi_generator/donate                          #
+################################################################################
+[INFO] 
+[INFO] --- protobuf-maven-plugin:0.6.1:compile (default) @ api ---
+[INFO] Compiling 1 proto file(s) to /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/protobuf/java
+[INFO] 
+[INFO] --- protobuf-maven-plugin:0.6.1:compile-custom (default) @ api ---
+[INFO] Compiling 1 proto file(s) to /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/protobuf/grpc-java
+[INFO] 
+[INFO] --- build-helper-maven-plugin:3.6.0:add-source (add-generated) @ api ---
+[INFO] Source directory: /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java added.
+[INFO] Source directory: /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/protobuf/java added.
+[INFO] Source directory: /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/protobuf/grpc-java added.
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ api ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] Copying 1 resource
+[INFO] Copying 1 resource
+[INFO] Copying 1 resource
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ api ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 64 source files with javac [debug release 25] to target/classes
+[INFO] /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/ClusterApi.java: Some input files use or override a deprecated API.
+[INFO] /home/robocop/dev/hyper/hyper-stack-4j/api/target/generated-sources/openapi/src/gen/java/io/hyperstack4j/api/ClusterApi.java: Recompile with -Xlint:deprecation for details.
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ api ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/api/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ api ---
+[INFO] No sources to compile
+[INFO] 
+[INFO] ----------------------< io.hyperstack4j:registry >----------------------
+[INFO] Building registry 0.1.0-SNAPSHOT                                  [3/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ registry ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/registry/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ registry ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 11 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ registry ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/registry/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ registry ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 7 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] ----------------------< io.hyperstack4j:kvcache >-----------------------
+[INFO] Building kvcache 0.1.0-SNAPSHOT                                   [4/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ kvcache ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/kvcache/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ kvcache ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 8 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ kvcache ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/kvcache/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ kvcache ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 7 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] -----------------------< io.hyperstack4j:health >-----------------------
+[INFO] Building health 0.1.0-SNAPSHOT                                    [5/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ health ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/health/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ health ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 6 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ health ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/health/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ health ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 3 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] ------------------------< io.hyperstack4j:node >------------------------
+[INFO] Building node 0.1.0-SNAPSHOT                                      [6/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ node ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/node/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ node ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 13 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ node ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/node/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ node ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 4 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] ---------------------< io.hyperstack4j:tokenizer >----------------------
+[INFO] Building tokenizer 0.1.0-SNAPSHOT                                 [7/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ tokenizer ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/tokenizer/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ tokenizer ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 8 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ tokenizer ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/tokenizer/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ tokenizer ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 4 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] ----------------------< io.hyperstack4j:sampler >-----------------------
+[INFO] Building sampler 0.1.0-SNAPSHOT                                   [8/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ sampler ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/sampler/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ sampler ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 9 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ sampler ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/sampler/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ sampler ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 8 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] --------------------< io.hyperstack4j:coordinator >---------------------
+[INFO] Building coordinator 0.1.0-SNAPSHOT                               [9/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ coordinator ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/coordinator/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ coordinator ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 14 source files with javac [debug release 25] to target/classes
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ coordinator ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/coordinator/src/test/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ coordinator ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 12 source files with javac [debug release 25] to target/test-classes
+[INFO] 
+[INFO] --------------------< io.hyperstack4j:integration >---------------------
+[INFO] Building integration 0.1.0-SNAPSHOT                              [10/10]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ integration ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] skip non existing resourceDirectory /home/robocop/dev/hyper/hyper-stack-4j/integration/src/main/resources
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:compile (default-compile) @ integration ---
+[INFO] No sources to compile
+[INFO] 
+[INFO] --- maven-resources-plugin:2.6:testResources (default-testResources) @ integration ---
+[INFO] Using 'UTF-8' encoding to copy filtered resources.
+[INFO] Copying 1 resource
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ integration ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 8 source files with javac [debug release 25] to target/test-classes
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for hyper-stack-4j 0.1.0-SNAPSHOT:
+[INFO] 
+[INFO] hyper-stack-4j ..................................... SUCCESS [  0.002 s]
+[INFO] api ................................................ SUCCESS [  5.866 s]
+[INFO] registry ........................................... SUCCESS [  0.693 s]
+[INFO] kvcache ............................................ SUCCESS [  0.488 s]
+[INFO] health ............................................. SUCCESS [  0.350 s]
+[INFO] node ............................................... SUCCESS [  0.423 s]
+[INFO] tokenizer .......................................... SUCCESS [  0.356 s]
+[INFO] sampler ............................................ SUCCESS [  0.208 s]
+[INFO] coordinator ........................................ SUCCESS [  0.635 s]
+[INFO] integration ........................................ SUCCESS [  0.437 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  9.612 s
+[INFO] Finished at: 2026-03-10T10:36:35+02:00
+[INFO] ------------------------------------------------------------------------
+✔ Build OK
+
+⚠ Starting 3-node cluster  (dtype=FLOAT32  max_tokens=10  temperature=0.7)
+⚠ Verbose mode ON — gRPC logs visible
+⚠ Ctrl-C to stop all nodes and exit
+
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper (file:/usr/share/maven/lib/guava.jar)
+WARNING: Please consider reporting this to the maintainers of class com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+
+  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ 
+  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗
+  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝
+  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗
+  ██║  ██║   ██║   ██║     ███████╗██║  ██║
+  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝
+
+  hyper-stack-4j  ·  ollama · (gguf: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf)  ·  interactive console
+  model=(gguf: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf)  max_tokens=10  temperature=0.7
+
+▶ Starting 3-node cluster...
+Mar 10, 2026 10:36:37 AM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-1] PID=17058
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+INFO: Node [node-1] gRPC server started on port 19092
+Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.NodeMain main
+INFO: Node [node-1] running on port 19092 — waiting for requests
+Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.ClusterHarness start
+INFO: Node [node-1] is up on port 19092
+Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-2] PID=17107
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+INFO: Node [node-2] gRPC server started on port 19093
+Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.ClusterHarness start
+INFO: Node [node-2] is up on port 19093
+Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.NodeMain main
+INFO: Node [node-2] running on port 19093 — waiting for requests
+Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-3] PID=17155
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+INFO: Node [node-3] gRPC server started on port 19094
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.NodeMain main
+INFO: Node [node-3] running on port 19094 — waiting for requests
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.ClusterHarness start
+INFO: Node [node-3] is up on port 19094
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.ProcessPipelineClient <init>
+INFO: ProcessPipelineClient created — dtype=FLOAT32, nodes=3
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Shard context: layers 0-8 embeddings=true outputProj=false
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Loading GGUF shard: layers 0–8  embd=true  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 8 layers, with embeddings, no output projection
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 0–8
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-1] KVCache scoped to LayerRange[0, 8)
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
+INFO: Node 0 shard load: Real shard loaded (CpuForwardPassHandler) layers 0–8
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Shard context: layers 8-15 embeddings=false outputProj=false
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Loading GGUF shard: layers 8–15  embd=false  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 7 layers, no output projection
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 8–15
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-2] KVCache scoped to LayerRange[8, 15)
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
+INFO: Node 1 shard load: Real shard loaded (CpuForwardPassHandler) layers 8–15
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Shard context: layers 15-22 embeddings=false outputProj=true
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Loading GGUF shard: layers 15–22  embd=false  outProj=true  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 10:36:44 AM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 10:36:44 AM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 7 layers, with output projection
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 15–22
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-3] KVCache scoped to LayerRange[15, 22)
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
+INFO: Node 2 shard load: Real shard loaded (CpuForwardPassHandler) layers 15–22
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ClusterHarness start
+INFO: Cluster ready — 3 nodes, 22 total layers distributed
+✔ Cluster ready  (FLOAT32 activations)
+
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ProcessPipelineClient <init>
+INFO: ProcessPipelineClient created — dtype=FLOAT32, nodes=3
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.tokenizer.GgufTokenizer load
+INFO: Loading tokenizer from GGUF metadata...
+Mar 10, 2026 10:36:45 AM io.hyperstack4j.tokenizer.GgufTokenizer load
+INFO: Tokenizer loaded: vocabSize=32000 bos=1 eos=2
+Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit.
+
+you> yo buddy! wazzup?     
+bot> Mar 10, 2026 10:37:05 AM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill: 25 steps for prompt of 26 tokens (request=4279bef0-f758-4106-9b02-3b2034200c3a)
+bot> Mar 10, 2026 10:37:30 AM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill complete. Decode starts at position 25
+[0:29903]S
+[1:545]ure
+[2:29892],
+[3:825] what
+[4:29915]'
+[5:29879]s
+[6:701] up
+[7:29973]?
+[8:13]
+
+[9:13]
+
+
+     [10 tokens · 34891 ms · FLOAT32]

@@ -16,301 +16,292 @@ import io.hyperstack4j.tokenizer.Tokenizer;
 /**
  * Core autoregressive generation loop.
  *
- * Implements the 8-step loop from the architecture doc:
- *   1. encode prompt (chatTemplate + tokenizer)
- *   2. check prefix cache
- *   3. forward pass (full prefill or incremental from cache hit)
- *   4. sample next token
- *   5. check EOS / stop tokens
- *   6. decode token piece
- *   7. stream piece to client via TokenConsumer
- *   8. repeat
+ * Implements the 8-step loop from the architecture doc: 1. encode prompt
+ * (chatTemplate + tokenizer) 2. check prefix cache 3. forward pass (full
+ * prefill or incremental from cache hit) 4. sample next token 5. check EOS /
+ * stop tokens 6. decode token piece 7. stream piece to client via TokenConsumer
+ * 8. repeat
  *
- * Stateless — one shared instance, called per request on a Virtual Thread.
- * Each call is independent; all state lives on the stack.
+ * Stateless — one shared instance, called per request on a Virtual Thread. Each
+ * call is independent; all state lives on the stack.
  */
 public final class GenerationLoop {
 
-    private static final Logger log = Logger.getLogger(GenerationLoop.class.getName());
+	private static final Logger log = Logger.getLogger(GenerationLoop.class.getName());
 
-    private final Tokenizer          tokenizer;
-    private final Sampler            sampler;
-    private final InferencePipeline  pipeline;
-    private final KVCacheManager     kvCache;
+	private final Tokenizer tokenizer;
+	private final Sampler sampler;
+	private final InferencePipeline pipeline;
+	private final KVCacheManager kvCache;
 
-    public GenerationLoop(Tokenizer tokenizer, Sampler sampler,
-                          InferencePipeline pipeline, KVCacheManager kvCache) {
-        this.tokenizer = tokenizer;
-        this.sampler   = sampler;
-        this.pipeline  = pipeline;
-        this.kvCache   = kvCache;
-    }
+	public GenerationLoop(Tokenizer tokenizer, Sampler sampler, InferencePipeline pipeline, KVCacheManager kvCache) {
+		this.tokenizer = tokenizer;
+		this.sampler = sampler;
+		this.pipeline = pipeline;
+		this.kvCache = kvCache;
+	}
 
-    /**
-     * Run batched generation for N requests simultaneously.
-     *
-     * One forwardBatch() call per decode step serves all active requests —
-     * the GPU sees a full batch matrix instead of N scalar passes.
-     *
-     * Algorithm (static batching):
-     *   1. Encode all prompts and resolve prefix-cache startPos per request.
-     *   2. Each step: collect still-active requests, call forwardBatch() once,
-     *      sample independently per request, stream tokens, mark finished.
-     *   3. Loop until every request has hit EOS or its own maxTokens.
-     *
-     * Requests finish independently — a short maxTokens request exits early
-     * without stalling others. Streaming consumers receive tokens in real time,
-     * step by step, exactly as in single-request generation.
-     *
-     * @param entries one entry per request (request + consumer pair)
-     * @return one GenerationResult per entry, in the same order
-     */
-    @SuppressWarnings("unchecked")
-    public List<GenerationResult> generateBatch(List<BatchEntry> entries) {
-        if (entries.isEmpty()) return List.of();
-        if (entries.size() == 1) {
-            // Fast path — skip batch overhead for a single entry
-            BatchEntry e = entries.get(0);
-            return List.of(generate(e.request(), e.consumer()));
-        }
+	/**
+	 * Run batched generation for N requests simultaneously.
+	 *
+	 * One forwardBatch() call per decode step serves all active requests — the GPU
+	 * sees a full batch matrix instead of N scalar passes.
+	 *
+	 * Algorithm (static batching): 1. Encode all prompts and resolve prefix-cache
+	 * startPos per request. 2. Each step: collect still-active requests, call
+	 * forwardBatch() once, sample independently per request, stream tokens, mark
+	 * finished. 3. Loop until every request has hit EOS or its own maxTokens.
+	 *
+	 * Requests finish independently — a short maxTokens request exits early without
+	 * stalling others. Streaming consumers receive tokens in real time, step by
+	 * step, exactly as in single-request generation.
+	 *
+	 * @param entries one entry per request (request + consumer pair)
+	 * @return one GenerationResult per entry, in the same order
+	 */
+	@SuppressWarnings("unchecked")
+	public List<GenerationResult> generateBatch(List<BatchEntry> entries) {
+		if (entries.isEmpty())
+			return List.of();
+		if (entries.size() == 1) {
+			// Fast path — skip batch overhead for a single entry
+			BatchEntry e = entries.get(0);
+			return List.of(generate(e.request(), e.consumer()));
+		}
 
-        int n = entries.size();
+		int n = entries.size();
 
-        // ── Per-request state ─────────────────────────────────────────────────
-        String[]     requestIds   = new String[n];
-        int[][]      allTokens    = new int[n][];
-        int[]        promptLens   = new int[n];   // length of original prompt (before generation)
-        int[]        startPos     = new int[n];   // KV cache offset per request
-        int[]        maxTokens    = new int[n];
-        List<Integer>[] generated = new List[n];
-        StringBuilder[] texts     = new StringBuilder[n];
-        GenerationResult.StopReason[] reasons = new GenerationResult.StopReason[n];
-        boolean[]    active       = new boolean[n];
-        Instant[]    starts       = new Instant[n];
+		// ── Per-request state ─────────────────────────────────────────────────
+		String[] requestIds = new String[n];
+		int[][] allTokens = new int[n][];
+		int[] promptLens = new int[n]; // length of original prompt (before generation)
+		int[] startPos = new int[n]; // KV cache offset per request
+		int[] maxTokens = new int[n];
+		List<Integer>[] generated = new List[n];
+		StringBuilder[] texts = new StringBuilder[n];
+		GenerationResult.StopReason[] reasons = new GenerationResult.StopReason[n];
+		boolean[] active = new boolean[n];
+		Instant[] starts = new Instant[n];
 
-        // ── Step 1: encode all prompts ────────────────────────────────────────
-        for (int i = 0; i < n; i++) {
-            InferenceRequest req = entries.get(i).request();
-            requestIds[i] = req.requestId();
-            starts[i]     = Instant.now();
+		// ── Step 1: encode all prompts ────────────────────────────────────────
+		for (int i = 0; i < n; i++) {
+			InferenceRequest req = entries.get(i).request();
+			requestIds[i] = req.requestId();
+			starts[i] = Instant.now();
 
-            ChatTemplateFormatter formatter = ChatTemplateFormatter.forModelType(
-                    req.modelId().toLowerCase().contains("tinyllama") ? "tinyllama" :
-                    req.modelId().contains("llama3")  ? "llama3"  :
-                    req.modelId().contains("mistral") ? "mistral" :
-                    req.modelId().contains("gemma")   ? "gemma"   : "chatml");
-            String prompt    = formatter.format(req.messages());
-            int[]  promptIds = tokenizer.encode(prompt);
+			ChatTemplateFormatter formatter = ChatTemplateFormatter
+					.forModelType(req.modelId().toLowerCase().contains("tinyllama") ? "tinyllama"
+							: req.modelId().contains("llama3") ? "llama3"
+									: req.modelId().contains("mistral") ? "mistral"
+											: req.modelId().contains("gemma") ? "gemma" : "chatml");
+			String prompt = formatter.format(req.messages());
+			int[] promptIds = tokenizer.encode(prompt);
 
-            var prefixMatch = kvCache.findLongestPrefix(promptIds);
-            startPos[i]  = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
+			var prefixMatch = kvCache.findLongestPrefix(promptIds);
+			startPos[i] = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
 
-            allTokens[i]  = promptIds.clone();
-            promptLens[i] = promptIds.length;
-            maxTokens[i]  = req.samplingParams().maxTokens();
-            generated[i]  = new ArrayList<>();
-            texts[i]      = new StringBuilder();
-            reasons[i]    = GenerationResult.StopReason.MAX_TOKENS;
-            active[i]     = true;
-        }
+			allTokens[i] = promptIds.clone();
+			promptLens[i] = promptIds.length;
+			maxTokens[i] = req.samplingParams().maxTokens();
+			generated[i] = new ArrayList<>();
+			texts[i] = new StringBuilder();
+			reasons[i] = GenerationResult.StopReason.MAX_TOKENS;
+			active[i] = true;
+		}
 
-        // ── Step 1b: Prefill — populate KV cache for all uncached prompt tokens ─
-        // Each request gets its own prefill: walk positions startPos[i]..promptLen[i]-2
-        // so the KV cache is warm before the decode loop starts.
-        boolean[] hadCacheHit = new boolean[n]; // remember original hit status for later
-        for (int i = 0; i < n; i++) {
-            hadCacheHit[i] = (startPos[i] > 0);
-            int[] promptIds = Arrays.copyOfRange(allTokens[i], 0, promptLens[i]);
-            for (int p = startPos[i]; p < promptLens[i] - 1; p++) {
-                int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
-                pipeline.forward(requestIds[i], prefillSlice, p); // KV stored; logits discarded
-            }
-            // Decode step 0 covers position promptLen-1 (last prompt token)
-            if (promptLens[i] > 0) {
-                startPos[i] = promptLens[i] - 1;
-            }
-        }
+		// ── Step 1b: Prefill — populate KV cache for all uncached prompt tokens ─
+		// Each request gets its own prefill: walk positions startPos[i]..promptLen[i]-2
+		// so the KV cache is warm before the decode loop starts.
+		boolean[] hadCacheHit = new boolean[n]; // remember original hit status for later
+		for (int i = 0; i < n; i++) {
+			hadCacheHit[i] = (startPos[i] > 0);
+			int[] promptIds = Arrays.copyOfRange(allTokens[i], 0, promptLens[i]);
+			for (int p = startPos[i]; p < promptLens[i] - 1; p++) {
+				int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
+				pipeline.forward(requestIds[i], prefillSlice, p); // KV stored; logits discarded
+			}
+			// Decode step 0 covers position promptLen-1 (last prompt token)
+			if (promptLens[i] > 0) {
+				startPos[i] = promptLens[i] - 1;
+			}
+		}
 
-        // ── Steps 2–N: batched decode loop ────────────────────────────────────
-        int globalMaxTokens = 0;
-        for (int mt : maxTokens) globalMaxTokens = Math.max(globalMaxTokens, mt);
+		// ── Steps 2–N: batched decode loop ────────────────────────────────────
+		int globalMaxTokens = 0;
+		for (int mt : maxTokens)
+			globalMaxTokens = Math.max(globalMaxTokens, mt);
 
-        for (int step = 0; step < globalMaxTokens; step++) {
+		for (int step = 0; step < globalMaxTokens; step++) {
 
-            // Collect active requests for this step
-            List<String>  batchIds  = new ArrayList<>(n);
-            List<int[]>   batchToks = new ArrayList<>(n);
-            List<Integer> batchPos  = new ArrayList<>(n);
-            List<Integer> batchIdx  = new ArrayList<>(n); // original index
+			// Collect active requests for this step
+			List<String> batchIds = new ArrayList<>(n);
+			List<int[]> batchToks = new ArrayList<>(n);
+			List<Integer> batchPos = new ArrayList<>(n);
+			List<Integer> batchIdx = new ArrayList<>(n); // original index
 
-            for (int i = 0; i < n; i++) {
-                if (!active[i]) continue;
-                if (generated[i].size() >= maxTokens[i]) { active[i] = false; continue; }
-                batchIds.add(requestIds[i]);
-                batchToks.add(allTokens[i]);
-                batchPos.add(startPos[i] + generated[i].size());
-                batchIdx.add(i);
-            }
+			for (int i = 0; i < n; i++) {
+				if (!active[i])
+					continue;
+				if (generated[i].size() >= maxTokens[i]) {
+					active[i] = false;
+					continue;
+				}
+				batchIds.add(requestIds[i]);
+				batchToks.add(allTokens[i]);
+				batchPos.add(startPos[i] + generated[i].size());
+				batchIdx.add(i);
+			}
 
-            if (batchIds.isEmpty()) break;
+			if (batchIds.isEmpty())
+				break;
 
-            // One forwardBatch call — the key GPU efficiency gain
-            float[][] logitsBatch = pipeline.forwardBatch(batchIds, batchToks, batchPos);
+			// One forwardBatch call — the key GPU efficiency gain
+			float[][] logitsBatch = pipeline.forwardBatch(batchIds, batchToks, batchPos);
 
-            // Sample + stream for each result independently
-            for (int j = 0; j < batchIdx.size(); j++) {
-                int i   = batchIdx.get(j);
-                InferenceRequest req = entries.get(i).request();
-                float[] logits = logitsBatch[j];
+			// Sample + stream for each result independently
+			for (int j = 0; j < batchIdx.size(); j++) {
+				int i = batchIdx.get(j);
+				InferenceRequest req = entries.get(i).request();
+				float[] logits = logitsBatch[j];
 
-                int[] historyArr = generated[i].stream().mapToInt(Integer::intValue).toArray();
-                int nextToken    = sampler.sample(logits, req.samplingParams(), historyArr);
+				int[] historyArr = generated[i].stream().mapToInt(Integer::intValue).toArray();
+				int nextToken = sampler.sample(logits, req.samplingParams(), historyArr);
 
-                if (nextToken == tokenizer.eosTokenId()) {
-                    reasons[i] = GenerationResult.StopReason.EOS_TOKEN;
-                    active[i]  = false;
-                } else if (sampler.isStopToken(nextToken, req.samplingParams())) {
-                    reasons[i] = GenerationResult.StopReason.STOP_TOKEN;
-                    active[i]  = false;
-                } else {
-                    String piece = tokenizer.decodeToken(nextToken);
-                    entries.get(i).consumer().onToken(piece, nextToken, generated[i].size());
-                    texts[i].append(piece);
-                    generated[i].add(nextToken);
-                    allTokens[i] = appendToken(allTokens[i], nextToken);
-                }
-            }
-        }
+				if (nextToken == tokenizer.eosTokenId()) {
+					reasons[i] = GenerationResult.StopReason.EOS_TOKEN;
+					active[i] = false;
+				} else if (sampler.isStopToken(nextToken, req.samplingParams())) {
+					reasons[i] = GenerationResult.StopReason.STOP_TOKEN;
+					active[i] = false;
+				} else {
+					String piece = tokenizer.decodeToken(nextToken);
+					entries.get(i).consumer().onToken(piece, nextToken, generated[i].size());
+					texts[i].append(piece);
+					generated[i].add(nextToken);
+					allTokens[i] = appendToken(allTokens[i], nextToken);
+				}
+			}
+		}
 
-        // ── Build results + cleanup ───────────────────────────────────────────
-        List<GenerationResult> results = new ArrayList<>(n);
-        for (int i = 0; i < n; i++) {
+		// ── Build results + cleanup ───────────────────────────────────────────
+		List<GenerationResult> results = new ArrayList<>(n);
+		for (int i = 0; i < n; i++) {
 
-            // Cache prompt prefix for future requests
-            if (!hadCacheHit[i] && promptLens[i] > 0) {
-                int[] promptOnly = new int[promptLens[i]];
-                System.arraycopy(allTokens[i], 0, promptOnly, 0, promptLens[i]);
-                kvCache.cachePrefix(promptOnly, promptOnly.length, requestIds[i] + ":prefix");
-            }
-            kvCache.evict(requestIds[i]);
+			// Cache prompt prefix for future requests
+			if (!hadCacheHit[i] && promptLens[i] > 0) {
+				int[] promptOnly = new int[promptLens[i]];
+				System.arraycopy(allTokens[i], 0, promptOnly, 0, promptLens[i]);
+				kvCache.cachePrefix(promptOnly, promptOnly.length, requestIds[i] + ":prefix");
+			}
+			kvCache.evict(requestIds[i]);
 
-            results.add(new GenerationResult(
-                    requestIds[i],
-                    texts[i].toString(),
-                    generated[i],
-                    promptLens[i],
-                    generated[i].size(),
-                    reasons[i],
-                    Instant.now(),
-                    Duration.between(starts[i], Instant.now())
-            ));
-        }
-        return results;
-    }
+			results.add(new GenerationResult(requestIds[i], texts[i].toString(), generated[i], promptLens[i],
+					generated[i].size(), reasons[i], Instant.now(), Duration.between(starts[i], Instant.now())));
+		}
+		return results;
+	}
 
-    /**
-     * Run generation for a single request.
-     *
-     * @param request  the inference request
-     * @param consumer receives each token piece as it is generated
-     * @return final GenerationResult with full text + stats
-     */
-    public GenerationResult generate(InferenceRequest request, TokenConsumer consumer) {
-        Instant start = Instant.now();
-        String requestId = request.requestId();
+	/**
+	 * Run generation for a single request.
+	 *
+	 * @param request  the inference request
+	 * @param consumer receives each token piece as it is generated
+	 * @return final GenerationResult with full text + stats
+	 */
+	public GenerationResult generate(InferenceRequest request, TokenConsumer consumer) {
+		Instant start = Instant.now();
+		String requestId = request.requestId();
 
-        // ── Step 1: Encode prompt ─────────────────────────────────────────────
-        ChatTemplateFormatter formatter = ChatTemplateFormatter.forModelType(
-                request.modelId().toLowerCase().contains("tinyllama") ? "tinyllama" :
-                request.modelId().contains("llama3")  ? "llama3"  :
-                request.modelId().contains("mistral") ? "mistral" :
-                request.modelId().contains("gemma")   ? "gemma"   : "chatml"
-        );
-        String prompt    = formatter.format(request.messages());
-        int[]  promptIds = tokenizer.encode(prompt);
+		// ── Step 1: Encode prompt ─────────────────────────────────────────────
+		ChatTemplateFormatter formatter = ChatTemplateFormatter
+				.forModelType(request.modelId().toLowerCase().contains("tinyllama") ? "tinyllama"
+						: request.modelId().contains("llama3") ? "llama3"
+								: request.modelId().contains("mistral") ? "mistral"
+										: request.modelId().contains("gemma") ? "gemma" : "chatml");
+		String prompt = formatter.format(request.messages());
+		int[] promptIds = tokenizer.encode(prompt);
 
-        // ── Step 2: Check prefix cache ────────────────────────────────────────
-        var prefixMatch = kvCache.findLongestPrefix(promptIds);
-        int startPos = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
+		// ── Step 2: Check prefix cache ────────────────────────────────────────
+		var prefixMatch = kvCache.findLongestPrefix(promptIds);
+		int startPos = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
 
-        if (prefixMatch.isHit()) {
-            log.fine("Prefix cache hit: skipping " + startPos + " tokens for " + requestId);
-        }
+		if (prefixMatch.isHit()) {
+			log.fine("Prefix cache hit: skipping " + startPos + " tokens for " + requestId);
+		}
 
-        // Build working token array (prompt IDs only at first)
-        int[]        allTokens     = promptIds.clone();
-        List<Integer> generatedIds = new ArrayList<>();
-        StringBuilder fullText     = new StringBuilder();
-        GenerationResult.StopReason stopReason = GenerationResult.StopReason.MAX_TOKENS;
+		// Build working token array (prompt IDs only at first)
+		int[] allTokens = promptIds.clone();
+		List<Integer> generatedIds = new ArrayList<>();
+		StringBuilder fullText = new StringBuilder();
+		GenerationResult.StopReason stopReason = GenerationResult.StopReason.MAX_TOKENS;
 
-        // ── Step 2b: Prefill — populate KV cache for all uncached prompt tokens ──
-        // Walk positions startPos .. promptLen-2, storing KV at each position.
-        // The last prompt token (position promptLen-1) is left for step 0 of the
-        // decode loop so its logits can drive the first token sample.
-        int prefillSteps = promptIds.length - 1 - startPos;
-        if (prefillSteps > 0) {
-            log.info("Prefill: " + prefillSteps + " steps for prompt of "
-                    + promptIds.length + " tokens (request=" + requestId + ")");
-            consumer.onPrefillStart(promptIds.length);
-            for (int p = startPos; p < promptIds.length - 1; p++) {
-                int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
-                pipeline.forward(requestId, prefillSlice, p); // KV stored; logits discarded
-            }
-            consumer.onPrefillComplete();
-            log.info("Prefill complete. Decode starts at position " + (promptIds.length - 1));
-        }
-        // Advance startPos so the decode loop runs at the correct sequence positions:
-        //   step 0 → position promptLen-1 (last prompt token, yields first-token logits)
-        //   step 1 → position promptLen   (first generated token)
-        //   ...
-        if (promptIds.length > 0) {
-            startPos = promptIds.length - 1;
-        }
+		// ── Step 2b: Prefill — populate KV cache for all uncached prompt tokens ──
+		// Walk positions startPos .. promptLen-2, storing KV at each position.
+		// The last prompt token (position promptLen-1) is left for step 0 of the
+		// decode loop so its logits can drive the first token sample.
+		int prefillSteps = promptIds.length - 1 - startPos;
+		if (prefillSteps > 0) {
+			log.info("Prefill: " + prefillSteps + " steps for prompt of " + promptIds.length + " tokens (request="
+					+ requestId + ")");
+			consumer.onPrefillStart(promptIds.length);
+			for (int p = startPos; p < promptIds.length - 1; p++) {
+				int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
+				pipeline.forward(requestId, prefillSlice, p); // KV stored; logits discarded
+			}
+			consumer.onPrefillComplete();
+			log.info("Prefill complete. Decode starts at position " + (promptIds.length - 1));
+		}
+		// Advance startPos so the decode loop runs at the correct sequence positions:
+		// step 0 → position promptLen-1 (last prompt token, yields first-token logits)
+		// step 1 → position promptLen (first generated token)
+		// ...
+		if (promptIds.length > 0) {
+			startPos = promptIds.length - 1;
+		}
 
-        // ── Steps 3–8: Autoregressive decode loop ─────────────────────────────
-        int maxTokens = request.samplingParams().maxTokens();
+		// ── Steps 3–8: Autoregressive decode loop ─────────────────────────────
+		int maxTokens = request.samplingParams().maxTokens();
 
-        for (int step = 0; step < maxTokens; step++) {
+		for (int step = 0; step < maxTokens; step++) {
 
-            // Step 3: Forward pass
-            float[] logits = pipeline.forward(requestId, allTokens, startPos + step);
+			// Step 3: Forward pass
+			float[] logits = pipeline.forward(requestId, allTokens, startPos + step);
 
-            // Step 4: Sample next token
-            int[] historyArr = generatedIds.stream()
-                    .mapToInt(Integer::intValue).toArray();
-            int nextToken = sampler.sample(logits, request.samplingParams(), historyArr);
+			// Step 4: Sample next token
+			int[] historyArr = generatedIds.stream().mapToInt(Integer::intValue).toArray();
+			int nextToken = sampler.sample(logits, request.samplingParams(), historyArr);
 
-            // Step 5: Check stop conditions
-            if (nextToken == tokenizer.eosTokenId()) {
-                stopReason = GenerationResult.StopReason.EOS_TOKEN;
-                break;
-            }
-            if (sampler.isStopToken(nextToken, request.samplingParams())) {
-                stopReason = GenerationResult.StopReason.STOP_TOKEN;
-                break;
-            }
+			// Step 5: Check stop conditions
+			if (nextToken == tokenizer.eosTokenId()) {
+				stopReason = GenerationResult.StopReason.EOS_TOKEN;
+				break;
+			}
+			if (sampler.isStopToken(nextToken, request.samplingParams())) {
+				stopReason = GenerationResult.StopReason.STOP_TOKEN;
+				break;
+			}
 
-            // Step 6: Decode token piece
-            String piece = tokenizer.decodeToken(nextToken);
+			// Step 6: Decode token piece
+			String piece = tokenizer.decodeToken(nextToken);
 
-            // Step 7: Stream to client
-            consumer.onToken(piece, nextToken, step);
-            fullText.append(piece);
-            generatedIds.add(nextToken);
+			// Step 7: Stream to client
+			consumer.onToken(piece, nextToken, step);
+			fullText.append(piece);
+			generatedIds.add(nextToken);
 
-            // Step 8: Extend token array for next iteration
-            allTokens = appendToken(allTokens, nextToken);
-        }
+			// Step 8: Extend token array for next iteration
+			allTokens = appendToken(allTokens, nextToken);
+		}
 
-        // Cache the prompt prefix for future requests
-        if (!prefixMatch.isHit() && promptIds.length > 0) {
-            kvCache.cachePrefix(promptIds, promptIds.length, requestId + ":prefix");
-        }
+		// Cache the prompt prefix for future requests
+		if (!prefixMatch.isHit() && promptIds.length > 0) {
+			kvCache.cachePrefix(promptIds, promptIds.length, requestId + ":prefix");
+		}
 
-        // Cleanup KV blocks for this request
-        kvCache.evict(requestId);
+		// Cleanup KV blocks for this request
+		kvCache.evict(requestId);
 
-        return new GenerationResult(
+		return new GenerationResult(
                 requestId,
                 fullText.toString(),
                 generatedIds,

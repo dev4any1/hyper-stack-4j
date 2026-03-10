@@ -27,6 +27,9 @@ bot> The capital of France is Paris...
 
 Three real JVM processes, real gRPC, real transformer math — no Ollama, no Python bridge, no external runtime.
 
+**69 production classes · 53 test files · 340 unit tests · 22 integration tests**  
+All tests green. Real-model end-to-end verified with TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf.
+
 ## Architecture
 
 ```
@@ -109,6 +112,23 @@ Decode (each new token):
 ### Tokenizer (GgufTokenizer)
 
 SentencePiece BPE tokenizer loaded directly from GGUF metadata — no separate `tokenizer.model` file needed. Reads `tokenizer.ggml.tokens`, `.scores`, and `.token_type` arrays from the same `.gguf` file as the weights. Handles byte fallback tokens (`<0xHH>`) for out-of-vocabulary characters.
+
+`decodeToken()` replaces the SentencePiece space-prefix character `▁` (U+2581) with a real space — essential for correct streaming output. The replacement is applied in the streaming path (`decodeToken`) and the batch path (`decode`) independently so neither can leak the raw SentencePiece marker to the client.
+
+### Chat Templates
+
+`ChatTemplate` maps a model-family key to a prompt-formatting function. The registry (`BUILT_IN`) currently contains:
+
+| Key | Format | Notes |
+|-----|--------|-------|
+| `llama3` | `<\|begin_of_text\|>...<\|eot_id\|>` | LLaMA 3 |
+| `mistral` | `[INST] ... [/INST]` | Mistral v0.x |
+| `gemma` | `<start_of_turn>user\n...<end_of_turn>` | Gemma |
+| `chatml` | `<\|im_start\|>role\n...<\|im_end\|>` | Default fallback |
+| `tinyllama` | `<\|user\|>\n...\</s>\n<\|assistant\|>\n` | TinyLlama / Zephyr |
+| `zephyr` | _(same as tinyllama)_ | Alias — same instance |
+
+`forModelType(String)` is case-insensitive and falls back to `chatml` for unknown keys. Using the wrong template (e.g. ChatML for TinyLlama) sends tokens the model has never seen during fine-tuning and produces garbage output.
 
 ## Quick Start
 
@@ -216,11 +236,23 @@ GET    /v1/cluster/shardmap   — current layer assignments
 # Build
 mvn clean install -T 1C
 
-# Unit tests
-mvn test
+# Unit tests only (fast — no model file needed)
+mvn test -pl tokenizer,node,coordinator,sampler,kvcache,health,registry
 
-# Integration tests (forks 3 real JVM node processes)
+# Unit tests for specific recently-changed modules
+mvn test -pl tokenizer,node
+
+# Integration tests — forks 3 real JVM node processes (stub mode, no model)
 mvn verify -pl integration
+
+# Integration tests — with real TinyLlama model (runs TinyLlamaLiveIT)
+mvn verify -pl integration \
+  -Dit.model.path=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+
+# Run only the live model IT
+mvn verify -pl integration \
+  -Dit.model.path=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf \
+  -Dit.test=TinyLlamaLiveIT
 
 # Skip ITs
 mvn verify -DskipITs
@@ -252,6 +284,37 @@ mvn verify -DskipITs
 | Tokenizer | `GgufTokenizer` (built-in SentencePiece BPE), `DJLTokenizer` (JNI) |
 | Weight format | GGUF v2/v3 |
 | Sampler | Pure Java |
+
+## Bug Fixes (session 5)
+
+Three correctness bugs were found and fixed during real-model verification. All three caused garbage output when running TinyLlama.
+
+### Bug 1 — Wrong chat template for TinyLlama
+**File:** `tokenizer/src/main/java/io/hyperstack4j/tokenizer/ChatTemplate.java`
+
+`ChatTemplate.BUILT_IN` was missing `"tinyllama"`, so `ChatTemplateFormatter.forModelType("tinyllama")` silently fell back to ChatML. TinyLlama is fine-tuned on the Zephyr template (`<|user|>`, `</s>`, `<|assistant|>`), not ChatML — the wrong template sends token sequences the model has never seen during training, producing complete garbage.
+
+Fix: added `tinyllama()` static method and registered both `"tinyllama"` and `"zephyr"` as aliases pointing to the same implementation.
+
+### Bug 2 — Raw `▁` leaked in streaming output
+**File:** `tokenizer/src/main/java/io/hyperstack4j/tokenizer/GgufTokenizer.java`
+
+`decodeToken()` returned raw SentencePiece pieces with the space-prefix character `▁` (U+2581) intact. The batch `decode()` path replaced it correctly, but the streaming path — which builds the full text by accumulating `decodeToken()` pieces — did not. Every word in streaming output appeared with a visible `▁` prefix instead of a space.
+
+Fix: `decodeToken()` now replaces `▁` with a space before returning.
+
+### Bug 3 — Q6_K dequantization wrong for positions ≥ 32
+**File:** `node/src/main/java/io/hyperstack4j/node/GgufReader.java`
+
+`loadQ6_K()` used a flat loop `for (int i = 0; i < 256; i++)` and indexed `qh` as `hi = i / 4`. This diverges from the llama.cpp reference (`dequantize_row_q6_K`) from position 32 onwards: the correct structure splits each 256-element block into two halves of 128 elements, and within each half `l` runs 0..31 producing four outputs that share a single `qh` byte. The wrong indexing caused all KV-projection and FFN weights in Q6_K-quantised models to produce incorrect values at position ≥ 32 in every block — a complete correctness failure for the most common superblock quantisation type.
+
+Fix: restructured the inner loop to match the two-halves × 32 layout exactly:
+```
+for (int half = 0; half < 2; half++)
+    for (int l = 0; l < 32; l++)
+        // out[l], out[l+32], out[l+64], out[l+96]
+        // all share qh[qhBase + l]
+```
 
 ## Notable Design Decisions
 

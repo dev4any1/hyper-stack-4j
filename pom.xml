@@ -36,7 +36,7 @@
 		<hazelcast.version>5.4.0</hazelcast.version>
 
 		<!-- gRPC / Protobuf -->
-		<grpc.version>1.63.0</grpc.version>
+		<grpc.version>1.68.0</grpc.version>
 		<protobuf.version>3.25.3</protobuf.version>
 		<protobuf-plugin.version>3.11.4</protobuf-plugin.version>
 
@@ -222,15 +222,15 @@
 			</dependency>
 
 			<dependency>
-			    <groupId>io.javalin</groupId>
-			    <artifactId>javalin</artifactId>
-			    <version>${javalin.version}</version>
+				<groupId>io.javalin</groupId>
+				<artifactId>javalin</artifactId>
+				<version>${javalin.version}</version>
 			</dependency>
 
 			<dependency>
-			    <groupId>io.prometheus</groupId>
-			    <artifactId>prometheus-metrics-exporter-httpserver</artifactId>
-			    <version>1.3.1</version>
+				<groupId>io.prometheus</groupId>
+				<artifactId>prometheus-metrics-exporter-httpserver</artifactId>
+				<version>1.3.1</version>
 			</dependency>
 
 			<!-- Logging -->
@@ -316,7 +316,8 @@
 					<artifactId>maven-surefire-plugin</artifactId>
 					<version>${maven-surefire.version}</version>
 					<configuration>
-						<argLine>--enable-preview</argLine>
+						<argLine>--enable-preview
+							--enable-native-access=ALL-UNNAMED</argLine>
 					</configuration>
 				</plugin>
 
@@ -367,5 +368,4 @@
 			</plugin>
 		</plugins>
 	</build>
-
 </project>

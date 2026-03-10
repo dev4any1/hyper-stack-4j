@@ -1,97 +1,97 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-         http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <groupId>io.hyperstack4j</groupId>
-        <artifactId>hyper-stack-4j</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
-    </parent>
+	<parent>
+		<groupId>io.hyperstack4j</groupId>
+		<artifactId>hyper-stack-4j</artifactId>
+		<version>0.1.0-SNAPSHOT</version>
+	</parent>
 
-    <artifactId>integration</artifactId>
-    <name>integration</name>
-    <description>
-        Full-cluster integration tests.
+	<artifactId>integration</artifactId>
+	<name>integration</name>
+	<description>
+		Full-cluster integration tests.
 
-        Two test flavours:
-          InProcessClusterIT   — 3 CyclicForwardPassHandlers chained via LocalInferencePipeline,
-                                 single JVM, zero network, fast feedback loop.
-          ThreeNodeClusterIT   — 3 real JVM node processes launched via ProcessBuilder,
-                                 each on a separate gRPC port, connected by a
-                                 ProcessPipelineClient that wires the coordinator to them.
+		Two test flavours:
+		InProcessClusterIT — 3 CyclicForwardPassHandlers chained via
+		LocalInferencePipeline,
+		single JVM, zero network, fast feedback loop.
+		ThreeNodeClusterIT — 3 real JVM node processes launched via
+		ProcessBuilder,
+		each on a separate gRPC port, connected by a
+		ProcessPipelineClient that wires the coordinator to them.
 
-        Recommended model for real-weight testing (no GPU required for stubs):
-          TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf   ~670 MB
-          vocab_size=32000  hidden_dim=2048  layers=22  heads=32
-          All 22 layers fit in one node; split 8/7/7 across three.
-          Download: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF
+		Recommended model for real-weight testing (no GPU required for stubs):
+		TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf ~670 MB
+		vocab_size=32000 hidden_dim=2048 layers=22 heads=32
+		All 22 layers fit in one node; split 8/7/7 across three.
+		Download: https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF
+		Memory budget (16 GB host):
+		3 node JVMs × -Xmx4g = 12 GB
+		1 coordinator JVM -Xmx2g = 2 GB
+		OS + JVM overhead = 2 GB
+		Total = 16 GB ✓
+	</description>
 
-        Memory budget (16 GB host):
-          3 node JVMs  × -Xmx4g  = 12 GB
-          1 coordinator JVM  -Xmx2g =  2 GB
-          OS + JVM overhead         =  2 GB
-          Total                     = 16 GB  ✓
-    </description>
+	<dependencies>
 
-    <dependencies>
+		<!-- All modules — integration tests wire everything together -->
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>api</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>registry</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>coordinator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>node</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>kvcache</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>tokenizer</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>sampler</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.hyperstack4j</groupId>
+			<artifactId>health</artifactId>
+		</dependency>
 
-        <!-- All modules — integration tests wire everything together -->
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>registry</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>coordinator</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>node</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>kvcache</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>tokenizer</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>sampler</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.hyperstack4j</groupId>
-            <artifactId>health</artifactId>
-        </dependency>
+		<!-- gRPC for EmbeddedNodeServer + ProcessPipelineClient -->
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-netty-shaded</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-protobuf</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.grpc</groupId>
+			<artifactId>grpc-stub</artifactId>
+		</dependency>
 
-        <!-- gRPC for EmbeddedNodeServer + ProcessPipelineClient -->
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-netty-shaded</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-protobuf</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>io.grpc</groupId>
-            <artifactId>grpc-stub</artifactId>
-        </dependency>
+	</dependencies>
 
-    </dependencies>
+	<build>
+		<plugins>
 
-    <build>
-        <plugins>
-
-            <!--
+			<!--
                 maven-failsafe-plugin runs *IT.java files.
                 These are skipped during normal `mvn test` and only run on
                 `mvn verify` or `mvn failsafe:integration-test`.
@@ -105,55 +105,55 @@
                 To skip integration tests entirely:
                     mvn verify -DskipITs
             -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-failsafe-plugin</artifactId>
-                <version>3.3.0</version>
-                <configuration>
-                    <argLine>--enable-preview</argLine>
-                    <!--
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-failsafe-plugin</artifactId>
+				<version>3.3.0</version>
+				<configuration>
+					<argLine>--enable-preview --enable-native-access=ALL-UNNAMED</argLine>
+					<!--
                         Each IT class runs in its own forked JVM.
                         ThreeNodeClusterIT spawns 3 additional child JVMs itself via
                         ProcessBuilder — so the total during that test is 4 JVMs.
                     -->
-                    <forkCount>1</forkCount>
-                    <reuseForks>false</reuseForks>
-                    <includes>
-                        <include>**/*IT.java</include>
-                    </includes>
-                    <systemPropertyVariables>
-                        <!--
+					<forkCount>1</forkCount>
+					<reuseForks>false</reuseForks>
+					<includes>
+						<include>**/*IT.java</include>
+					</includes>
+					<systemPropertyVariables>
+						<!--
                             Point at a local GGUF for real-model tests.
                             When unset, all tests fall back to CyclicForwardPassHandler.
                         -->
-                        <it.model.path>${it.model.path}</it.model.path>
-                        <!-- Failsafe timeout per test class (ms) -->
-                        <it.timeout.ms>120000</it.timeout.ms>
-                    </systemPropertyVariables>
-                </configuration>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>integration-test</goal>
-                            <goal>verify</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
+						<it.model.path>${it.model.path}</it.model.path>
+						<!-- Failsafe timeout per test class (ms) -->
+						<it.timeout.ms>120000</it.timeout.ms>
+					</systemPropertyVariables>
+				</configuration>
+				<executions>
+					<execution>
+						<goals>
+							<goal>integration-test</goal>
+							<goal>verify</goal>
+						</goals>
+					</execution>
+				</executions>
+			</plugin>
 
-            <!--
+			<!--
                 exec-maven-plugin lets you start NodeMain manually for debugging:
                     mvn exec:java -pl integration \
                         -Dexec.mainClass=io.hyperstack4j.integration.NodeMain \
                         -Dexec.args="node-1 localhost 9092 0"
             -->
-            <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>exec-maven-plugin</artifactId>
-                <version>3.3.0</version>
-            </plugin>
+			<plugin>
+				<groupId>org.codehaus.mojo</groupId>
+				<artifactId>exec-maven-plugin</artifactId>
+				<version>3.3.0</version>
+			</plugin>
 
-        </plugins>
-    </build>
+		</plugins>
+	</build>
 
 </project>
