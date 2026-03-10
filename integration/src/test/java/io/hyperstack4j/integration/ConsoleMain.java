@@ -104,10 +104,8 @@ public final class ConsoleMain {
 		String ollamaUrl = syspropOrEnv("OLLAMA_URL", "http://localhost:11434");
 		String modelPath = syspropOrEnv("MODEL_PATH", "");
 
-		banner(dtype, maxTokens, temperature,
-				ollamaModel.isBlank() && !modelPath.isBlank()
-						? "(gguf: " + java.nio.file.Path.of(modelPath).getFileName() + ")"
-						: ollamaModel);
+		String ggufName = modelPath.isBlank() ? "" : java.nio.file.Path.of(modelPath).getFileName().toString();
+		banner(dtype, maxTokens, temperature, ggufName, ollamaModel);
 
 		if (!ollamaModel.isBlank()) {
 			runOllamaRepl(ollamaModel, ollamaUrl, maxTokens, temperature);
@@ -343,7 +341,8 @@ public final class ConsoleMain {
 
 	// ── Helpers ───────────────────────────────────────────────────────────────
 
-	private static void banner(ActivationDtype dtype, int maxTokens, float temperature, String ollamaModel) {
+	private static void banner(ActivationDtype dtype, int maxTokens, float temperature, String ggufName,
+			String ollamaModel) {
 		System.out.println();
 		System.out.println(BOLD + CYAN + "  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ");
 		System.out.println("  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗");
@@ -352,14 +351,24 @@ public final class ConsoleMain {
 		System.out.println("  ██║  ██║   ██║   ██║     ███████╗██║  ██║");
 		System.out.println("  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝" + RESET);
 		System.out.println();
-		String mode = ollamaModel.isBlank() ? "3-node stub cluster" : "ollama · " + ollamaModel;
+
+		String mode;
+		String details;
+		if (!ollamaModel.isBlank()) {
+			mode = "ollama  ·  " + ollamaModel;
+			details = "  model=" + ollamaModel + "  max_tokens=" + maxTokens + "  temperature=" + temperature;
+		} else if (!ggufName.isBlank()) {
+			mode = "3-node cluster  ·  " + ggufName;
+			details = "  dtype=" + dtype + "  max_tokens=" + maxTokens + "  temperature=" + temperature
+					+ "  nodes=3 (localhost:19092-19094)";
+		} else {
+			mode = "3-node cluster  (stub)";
+			details = "  dtype=" + dtype + "  max_tokens=" + maxTokens + "  temperature=" + temperature
+					+ "  nodes=3 (localhost:19092-19094)";
+		}
+
 		System.out.println(CYAN + "  hyper-stack-4j  ·  " + mode + "  ·  interactive console" + RESET);
-		System.out.println(DIM
-				+ (ollamaModel.isBlank()
-						? "  dtype=" + dtype + "  max_tokens=" + maxTokens + "  temperature=" + temperature
-								+ "  nodes=3 (localhost:19092-19094)"
-						: "  model=" + ollamaModel + "  max_tokens=" + maxTokens + "  temperature=" + temperature)
-				+ RESET);
+		System.out.println(DIM + details + RESET);
 		System.out.println();
 	}
 

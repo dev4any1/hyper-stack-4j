@@ -8,7 +8,6 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] ------------------------------------------------------------------------
 [INFO] Reactor Build Order:
 [INFO] 
-[INFO] hyper-stack-4j                                                     [pom]
 [INFO] api                                                                [jar]
 [INFO] registry                                                           [jar]
 [INFO] kvcache                                                            [jar]
@@ -19,12 +18,8 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] coordinator                                                        [jar]
 [INFO] integration                                                        [jar]
 [INFO] 
-[INFO] -------------------< io.hyperstack4j:hyper-stack-4j >-------------------
-[INFO] Building hyper-stack-4j 0.1.0-SNAPSHOT                            [1/10]
-[INFO] --------------------------------[ pom ]---------------------------------
-[INFO] 
 [INFO] ------------------------< io.hyperstack4j:api >-------------------------
-[INFO] Building api 0.1.0-SNAPSHOT                                       [2/10]
+[INFO] Building api 0.1.0-SNAPSHOT                                        [1/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- os-maven-plugin:1.7.1:detect (default) @ api ---
@@ -121,7 +116,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] No sources to compile
 [INFO] 
 [INFO] ----------------------< io.hyperstack4j:registry >----------------------
-[INFO] Building registry 0.1.0-SNAPSHOT                                  [3/10]
+[INFO] Building registry 0.1.0-SNAPSHOT                                   [2/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ registry ---
@@ -141,7 +136,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] Compiling 7 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] ----------------------< io.hyperstack4j:kvcache >-----------------------
-[INFO] Building kvcache 0.1.0-SNAPSHOT                                   [4/10]
+[INFO] Building kvcache 0.1.0-SNAPSHOT                                    [3/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ kvcache ---
@@ -161,7 +156,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] Compiling 7 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] -----------------------< io.hyperstack4j:health >-----------------------
-[INFO] Building health 0.1.0-SNAPSHOT                                    [5/10]
+[INFO] Building health 0.1.0-SNAPSHOT                                     [4/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ health ---
@@ -181,7 +176,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] Compiling 3 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] ------------------------< io.hyperstack4j:node >------------------------
-[INFO] Building node 0.1.0-SNAPSHOT                                      [6/10]
+[INFO] Building node 0.1.0-SNAPSHOT                                       [5/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ node ---
@@ -198,10 +193,10 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] 
 [INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ node ---
 [INFO] Recompiling the module because of changed dependency.
-[INFO] Compiling 4 source files with javac [debug release 25] to target/test-classes
+[INFO] Compiling 5 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] ---------------------< io.hyperstack4j:tokenizer >----------------------
-[INFO] Building tokenizer 0.1.0-SNAPSHOT                                 [7/10]
+[INFO] Building tokenizer 0.1.0-SNAPSHOT                                  [6/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ tokenizer ---
@@ -221,7 +216,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] Compiling 4 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] ----------------------< io.hyperstack4j:sampler >-----------------------
-[INFO] Building sampler 0.1.0-SNAPSHOT                                   [8/10]
+[INFO] Building sampler 0.1.0-SNAPSHOT                                    [7/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ sampler ---
@@ -241,7 +236,7 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] Compiling 8 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] --------------------< io.hyperstack4j:coordinator >---------------------
-[INFO] Building coordinator 0.1.0-SNAPSHOT                               [9/10]
+[INFO] Building coordinator 0.1.0-SNAPSHOT                                [8/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ coordinator ---
@@ -258,10 +253,10 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] 
 [INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ coordinator ---
 [INFO] Recompiling the module because of changed dependency.
-[INFO] Compiling 12 source files with javac [debug release 25] to target/test-classes
+[INFO] Compiling 13 source files with javac [debug release 25] to target/test-classes
 [INFO] 
 [INFO] --------------------< io.hyperstack4j:integration >---------------------
-[INFO] Building integration 0.1.0-SNAPSHOT                              [10/10]
+[INFO] Building integration 0.1.0-SNAPSHOT                                [9/9]
 [INFO] --------------------------------[ jar ]---------------------------------
 [INFO] 
 [INFO] --- maven-resources-plugin:2.6:resources (default-resources) @ integration ---
@@ -277,29 +272,28 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 [INFO] 
 [INFO] --- maven-compiler-plugin:3.13.0:testCompile (default-testCompile) @ integration ---
 [INFO] Recompiling the module because of changed dependency.
-[INFO] Compiling 8 source files with javac [debug release 25] to target/test-classes
+[INFO] Compiling 9 source files with javac [debug release 25] to target/test-classes
 [INFO] ------------------------------------------------------------------------
-[INFO] Reactor Summary for hyper-stack-4j 0.1.0-SNAPSHOT:
+[INFO] Reactor Summary for api 0.1.0-SNAPSHOT:
 [INFO] 
-[INFO] hyper-stack-4j ..................................... SUCCESS [  0.002 s]
-[INFO] api ................................................ SUCCESS [  5.866 s]
-[INFO] registry ........................................... SUCCESS [  0.693 s]
-[INFO] kvcache ............................................ SUCCESS [  0.488 s]
-[INFO] health ............................................. SUCCESS [  0.350 s]
-[INFO] node ............................................... SUCCESS [  0.423 s]
-[INFO] tokenizer .......................................... SUCCESS [  0.356 s]
-[INFO] sampler ............................................ SUCCESS [  0.208 s]
-[INFO] coordinator ........................................ SUCCESS [  0.635 s]
-[INFO] integration ........................................ SUCCESS [  0.437 s]
+[INFO] api ................................................ SUCCESS [  4.169 s]
+[INFO] registry ........................................... SUCCESS [  0.603 s]
+[INFO] kvcache ............................................ SUCCESS [  0.459 s]
+[INFO] health ............................................. SUCCESS [  0.269 s]
+[INFO] node ............................................... SUCCESS [  0.380 s]
+[INFO] tokenizer .......................................... SUCCESS [  0.212 s]
+[INFO] sampler ............................................ SUCCESS [  0.146 s]
+[INFO] coordinator ........................................ SUCCESS [  0.601 s]
+[INFO] integration ........................................ SUCCESS [  0.266 s]
 [INFO] ------------------------------------------------------------------------
 [INFO] BUILD SUCCESS
 [INFO] ------------------------------------------------------------------------
-[INFO] Total time:  9.612 s
-[INFO] Finished at: 2026-03-10T10:36:35+02:00
+[INFO] Total time:  7.230 s
+[INFO] Finished at: 2026-03-10T16:51:42+02:00
 [INFO] ------------------------------------------------------------------------
 ✔ Build OK
 
-⚠ Starting 3-node cluster  (dtype=FLOAT32  max_tokens=10  temperature=0.7)
+⚠ Starting 3-node cluster  (dtype=FLOAT16  max_tokens=10  temperature=0.7  heap=4g)
 ⚠ Verbose mode ON — gRPC logs visible
 ⚠ Ctrl-C to stop all nodes and exit
 
@@ -315,164 +309,162 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
   ██║  ██║   ██║   ██║     ███████╗██║  ██║
   ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝
 
-  hyper-stack-4j  ·  ollama · (gguf: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf)  ·  interactive console
-  model=(gguf: TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf)  max_tokens=10  temperature=0.7
+  hyper-stack-4j  ·  3-node cluster  ·  TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf  ·  interactive console
+  dtype=FLOAT16  max_tokens=10  temperature=0.7  nodes=3 (localhost:19092-19094)
 
 ▶ Starting 3-node cluster...
-Mar 10, 2026 10:36:37 AM io.hyperstack4j.integration.ClusterHarness launchNode
-INFO: Forked JVM for node [node-1] PID=17058
+Mar 10, 2026 4:51:44 PM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-1] PID=8324
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
-WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
 WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
 WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
-WARNING: A restricted method in java.lang.System has been called
-WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
-WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
-WARNING: Restricted methods will be blocked in a future release unless native access is enabled
-
-Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.EmbeddedNodeServer start
 INFO: Node [node-1] gRPC server started on port 19092
-Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.NodeMain main
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.NodeMain main
 INFO: Node [node-1] running on port 19092 — waiting for requests
-Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.ClusterHarness start
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.ClusterHarness start
 INFO: Node [node-1] is up on port 19092
-Mar 10, 2026 10:36:38 AM io.hyperstack4j.integration.ClusterHarness launchNode
-INFO: Forked JVM for node [node-2] PID=17107
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-2] PID=8372
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
-WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
 WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
 WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
-WARNING: A restricted method in java.lang.System has been called
-WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
-WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
-WARNING: Restricted methods will be blocked in a future release unless native access is enabled
-
-Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.EmbeddedNodeServer start
 INFO: Node [node-2] gRPC server started on port 19093
-Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.ClusterHarness start
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.ClusterHarness start
 INFO: Node [node-2] is up on port 19093
-Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.NodeMain main
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.NodeMain main
 INFO: Node [node-2] running on port 19093 — waiting for requests
-Mar 10, 2026 10:36:39 AM io.hyperstack4j.integration.ClusterHarness launchNode
-INFO: Forked JVM for node [node-3] PID=17155
+Mar 10, 2026 4:51:45 PM io.hyperstack4j.integration.ClusterHarness launchNode
+INFO: Forked JVM for node [node-3] PID=8420
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
-WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
 WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
 WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
-WARNING: A restricted method in java.lang.System has been called
-WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
-WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
-WARNING: Restricted methods will be blocked in a future release unless native access is enabled
-
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer start
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer start
 INFO: Node [node-3] gRPC server started on port 19094
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.NodeMain main
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.NodeMain main
 INFO: Node [node-3] running on port 19094 — waiting for requests
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.ClusterHarness start
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.ClusterHarness start
 INFO: Node [node-3] is up on port 19094
 WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
-WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
 WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
 WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
-WARNING: A restricted method in java.lang.System has been called
-WARNING: java.lang.System::loadLibrary has been called by io.grpc.netty.shaded.io.netty.util.internal.NativeLibraryUtil in an unnamed module (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.63.0/grpc-netty-shaded-1.63.0.jar)
-WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
-WARNING: Restricted methods will be blocked in a future release unless native access is enabled
-
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.ProcessPipelineClient <init>
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.ProcessPipelineClient <init>
 INFO: ProcessPipelineClient created — dtype=FLOAT32, nodes=3
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
 INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Shard context: layers 0-8 embeddings=true outputProj=false
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.CpuForwardPassHandler load
-INFO: Loading GGUF shard: layers 0–8  embd=true  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.GgufReader open
-INFO: GGUF v3 — tensors=201 metadata=23
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.GgufReader open
-INFO: Data section starts at byte 736224
-Mar 10, 2026 10:36:40 AM io.hyperstack4j.node.CpuForwardPassHandler load
-INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
-INFO: Shard loaded — 8 layers, with embeddings, no output projection
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Real shard loaded (CpuForwardPassHandler) layers 0–8
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Node [node-1] KVCache scoped to LayerRange[0, 8)
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
-INFO: Node 0 shard load: Real shard loaded (CpuForwardPassHandler) layers 0–8
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
 INFO: Shard context: layers 8-15 embeddings=false outputProj=false
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler load
-INFO: Loading GGUF shard: layers 8–15  embd=false  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.GgufReader open
-INFO: GGUF v3 — tensors=201 metadata=23
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.GgufReader open
-INFO: Data section starts at byte 736224
-Mar 10, 2026 10:36:42 AM io.hyperstack4j.node.CpuForwardPassHandler load
-INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
-INFO: Shard loaded — 7 layers, no output projection
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Real shard loaded (CpuForwardPassHandler) layers 8–15
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Node [node-2] KVCache scoped to LayerRange[8, 15)
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
-INFO: Node 1 shard load: Real shard loaded (CpuForwardPassHandler) layers 8–15
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
 INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Loading GGUF shard: layers 8–15  embd=false  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Shard context: layers 0-8 embeddings=true outputProj=false
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Loading real model from: /home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
 INFO: Shard context: layers 15-22 embeddings=false outputProj=true
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.CpuForwardPassHandler load
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Loading GGUF shard: layers 0–8  embd=true  outProj=false  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
 INFO: Loading GGUF shard: layers 15–22  embd=false  outProj=true  file=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf
-Mar 10, 2026 10:36:43 AM io.hyperstack4j.node.GgufReader open
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
 INFO: GGUF v3 — tensors=201 metadata=23
-Mar 10, 2026 10:36:44 AM io.hyperstack4j.node.GgufReader open
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
 INFO: Data section starts at byte 736224
-Mar 10, 2026 10:36:44 AM io.hyperstack4j.node.CpuForwardPassHandler load
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
 INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.CpuForwardPassHandler <init>
-INFO: Shard loaded — 7 layers, with output projection
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Real shard loaded (CpuForwardPassHandler) layers 15–22
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
-INFO: Node [node-3] KVCache scoped to LayerRange[15, 22)
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ProcessPipelineClient loadShards
-INFO: Node 2 shard load: Real shard loaded (CpuForwardPassHandler) layers 15–22
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ClusterHarness start
-INFO: Cluster ready — 3 nodes, 22 total layers distributed
-✔ Cluster ready  (FLOAT32 activations)
-
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.integration.ProcessPipelineClient <init>
-INFO: ProcessPipelineClient created — dtype=FLOAT32, nodes=3
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.GgufReader open
-INFO: GGUF v3 — tensors=201 metadata=23
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.node.GgufReader open
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
 INFO: Data section starts at byte 736224
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.tokenizer.GgufTokenizer load
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+Mar 10, 2026 4:51:46 PM io.hyperstack4j.node.CpuForwardPassHandler load
+INFO: Model: LlamaConfig{arch=llama hidden=2048 layers=22 heads=32 kvHeads=4 headDim=64 ffn=5632 vocab=32000 eps=1.0e-05 ropeTheta=10000}
+Mar 10, 2026 4:51:47 PM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 7 layers, no output projection
+Mar 10, 2026 4:51:47 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 8–15
+Mar 10, 2026 4:51:47 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-2] KVCache scoped to LayerRange[8, 15)
+Mar 10, 2026 4:51:47 PM io.hyperstack4j.integration.ProcessPipelineClient lambda$loadShards$0
+INFO: Node 1 shard load: Real shard loaded (CpuForwardPassHandler) layers 8–15
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 8 layers, with embeddings, no output projection
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 0–8
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-1] KVCache scoped to LayerRange[0, 8)
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.node.CpuForwardPassHandler <init>
+INFO: Shard loaded — 7 layers, with output projection
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Real shard loaded (CpuForwardPassHandler) layers 15–22
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.EmbeddedNodeServer$NodeServiceImpl loadShard
+INFO: Node [node-3] KVCache scoped to LayerRange[15, 22)
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.ProcessPipelineClient lambda$loadShards$0
+INFO: Node 0 shard load: Real shard loaded (CpuForwardPassHandler) layers 0–8
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.ProcessPipelineClient lambda$loadShards$0
+INFO: Node 2 shard load: Real shard loaded (CpuForwardPassHandler) layers 15–22
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.ClusterHarness start
+INFO: Cluster ready — 3 nodes, 22 total layers distributed
+✔ Cluster ready  (FLOAT16 activations)
+
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.integration.ProcessPipelineClient <init>
+INFO: ProcessPipelineClient created — dtype=FLOAT16, nodes=3
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.node.GgufReader open
+INFO: GGUF v3 — tensors=201 metadata=23
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.node.GgufReader open
+INFO: Data section starts at byte 736224
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.tokenizer.GgufTokenizer load
 INFO: Loading tokenizer from GGUF metadata...
-Mar 10, 2026 10:36:45 AM io.hyperstack4j.tokenizer.GgufTokenizer load
+Mar 10, 2026 4:51:48 PM io.hyperstack4j.tokenizer.GgufTokenizer load
 INFO: Tokenizer loaded: vocabSize=32000 bos=1 eos=2
 Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit.
 
-you> yo buddy! wazzup?     
-bot> Mar 10, 2026 10:37:05 AM io.hyperstack4j.coordinator.GenerationLoop generate
-INFO: Prefill: 25 steps for prompt of 26 tokens (request=4279bef0-f758-4106-9b02-3b2034200c3a)
-bot> Mar 10, 2026 10:37:30 AM io.hyperstack4j.coordinator.GenerationLoop generate
-INFO: Prefill complete. Decode starts at position 25
-[0:29903]S
-[1:545]ure
-[2:29892],
-[3:825] what
-[4:29915]'
-[5:29879]s
-[6:701] up
-[7:29973]?
-[8:13]
+you> awesome. how are you?
+bot> Mar 10, 2026 4:53:08 PM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill: 24 steps for prompt of 25 tokens (request=2994528f-403a-4151-81a9-b7ec1897e160)
+bot> Mar 10, 2026 4:53:11 PM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill complete. Decode starts at position 24
+[0:29902]I
+[1:29915]'
+[2:29885]m
+[3:2599] doing
+[4:1532] well
+[5:29889].
+[6:1128] How
+[7:1048] about
+[8:366] you
+[9:29973]?
 
-[9:13]
+     [10 tokens · 3852 ms · FLOAT16]
 
+you> I'm good. you are quite fast!
+bot> Mar 10, 2026 4:53:25 PM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill: 27 steps for prompt of 28 tokens (request=b0d3f5c3-67a8-4bd4-bb83-b60fdcb0e18e)
+bot> Mar 10, 2026 4:53:28 PM io.hyperstack4j.coordinator.GenerationLoop generate
+INFO: Prefill complete. Decode starts at position 27
+[0:29902]I
+[1:29915]'
+[2:29885]m
+[3:10932] glad
+[4:304] to
+[5:8293] hear
+[6:393] that
+[7:29991]!
+[8:739] It
+[9:471] was
 
-     [10 tokens · 34891 ms · FLOAT32]
+     [10 tokens · 3792 ms · FLOAT16]
+
+you>

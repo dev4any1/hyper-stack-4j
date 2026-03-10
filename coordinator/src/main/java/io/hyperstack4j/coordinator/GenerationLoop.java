@@ -191,10 +191,15 @@ public final class GenerationLoop {
 					active[i] = false;
 				} else {
 					String piece = tokenizer.decodeToken(nextToken);
-					entries.get(i).consumer().onToken(piece, nextToken, generated[i].size());
-					texts[i].append(piece);
-					generated[i].add(nextToken);
-					allTokens[i] = appendToken(allTokens[i], nextToken);
+					if (isEosMarker(piece)) {
+						reasons[i] = GenerationResult.StopReason.EOS_TOKEN;
+						active[i] = false;
+					} else {
+						entries.get(i).consumer().onToken(piece, nextToken, generated[i].size());
+						texts[i].append(piece);
+						generated[i].add(nextToken);
+						allTokens[i] = appendToken(allTokens[i], nextToken);
+					}
 				}
 			}
 		}
@@ -287,10 +292,10 @@ public final class GenerationLoop {
 			int[] historyArr = generatedIds.stream().mapToInt(Integer::intValue).toArray();
 			int nextToken = sampler.sample(logits, request.samplingParams(), historyArr);
 
-			// Step 5: Check stop conditions
+			// Step 5: Check stop conditions by token ID
 			if (nextToken == tokenizer.eosTokenId()) {
 				stopReason = GenerationResult.StopReason.EOS_TOKEN;
-				break;
+				break; // break BEFORE decode — EOS piece must never reach consumer or fullText
 			}
 			if (sampler.isStopToken(nextToken, request.samplingParams())) {
 				stopReason = GenerationResult.StopReason.STOP_TOKEN;
@@ -299,6 +304,16 @@ public final class GenerationLoop {
 
 			// Step 6: Decode token piece
 			String piece = tokenizer.decodeToken(nextToken);
+
+			// Step 5b: Defensive EOS-string filter.
+			// GgufTokenizer quirk: a non-EOS token ID may decode to an EOS marker
+			// string (e.g. "</s>", "<|endoftext|>") when the model vocabulary stores
+			// these as regular text tokens in addition to the special EOS ID.
+			// Suppress such pieces so they never reach the consumer or fullText.
+			if (isEosMarker(piece)) {
+				stopReason = GenerationResult.StopReason.EOS_TOKEN;
+				break;
+			}
 
 			// Step 7: Stream to client
 			consumer.onToken(piece, nextToken, step);
@@ -330,6 +345,23 @@ public final class GenerationLoop {
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns true if a decoded piece string is a known EOS marker.
+     *
+     * GgufTokenizer quirk: some models have EOS strings like "</s>" stored as
+     * regular vocabulary entries at token IDs that differ from the special EOS ID.
+     * Treating these as EOS prevents them leaking into the generated text.
+     *
+     * Marker set: "</s>" (LLaMA/Mistral/TinyLlama), "<|endoftext|>" (GPT/Phi),
+     * "<|eot_id|>" (LLaMA 3), "<end_of_turn>" (Gemma).
+     */
+    private static boolean isEosMarker(String piece) {
+        return switch (piece) {
+            case "</s>", "<|endoftext|>", "<|eot_id|>", "<end_of_turn>" -> true;
+            default -> false;
+        };
+    }
 
     private int[] appendToken(int[] tokens, int newToken) {
         int[] next = new int[tokens.length + 1];

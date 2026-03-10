@@ -288,15 +288,36 @@ public final class CpuForwardPassHandler implements ForwardPassHandler {
 	/**
 	 * Matrix–vector multiply: y[rows] = A[rows, cols] × x[cols] A is stored
 	 * row-major: A[r, c] = weights[r * cols + c]
+	 *
+	 * Implementation: for large matrices (rows ≥ 256) the outer loop runs in
+	 * parallel across ForkJoinPool.commonPool() using IntStream.parallel(). This
+	 * gives a linear speedup with available CPU cores for the dominant matmul
+	 * operations (Q/K/V projection, FFN gate/up/down, output projection).
+	 *
+	 * For small matrices the parallel overhead exceeds the gain; a plain loop is
+	 * used below the threshold.
+	 *
+	 * Thread-safety: reads A and x (immutable during the call), writes to
+	 * independent rows of y — no shared mutable state.
 	 */
 	static float[] matVec(float[] A, float[] x, int rows, int cols) {
 		float[] y = new float[rows];
-		for (int r = 0; r < rows; r++) {
-			float acc = 0f;
-			int base = r * cols;
-			for (int c = 0; c < cols; c++)
-				acc += A[base + c] * x[c];
-			y[r] = acc;
+		if (rows >= 256) {
+			java.util.stream.IntStream.range(0, rows).parallel().forEach(r -> {
+				float acc = 0f;
+				int base = r * cols;
+				for (int c = 0; c < cols; c++)
+					acc += A[base + c] * x[c];
+				y[r] = acc;
+			});
+		} else {
+			for (int r = 0; r < rows; r++) {
+				float acc = 0f;
+				int base = r * cols;
+				for (int c = 0; c < cols; c++)
+					acc += A[base + c] * x[c];
+				y[r] = acc;
+			}
 		}
 		return y;
 	}

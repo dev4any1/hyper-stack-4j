@@ -29,28 +29,36 @@ check_deps() {
 
 cmd_cluster() {
   # ── Parse optional flags ──────────────────────────────────────────────────
-  local dtype="${DTYPE:-FLOAT32}"
+  local dtype="${DTYPE:-FLOAT16}"      # FLOAT16 default: halves gRPC payload vs FLOAT32
   local max_tokens="${MAX_TOKENS:-200}"
   local temperature="${TEMPERATURE:-0.7}"
+  local heap="${HEAP:-4g}"             # -Xmx override: 4g default (2g was too tight for real models)
   local verbose="false"
+  local skip_build="false"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dtype)        dtype="$2";        shift 2 ;;
       --max-tokens)   max_tokens="$2";   shift 2 ;;
       --temperature)  temperature="$2";  shift 2 ;;
+      --heap)         heap="$2";         shift 2 ;;
       --float16|--fp16) dtype="FLOAT16"; shift ;;
+      --float32)        dtype="FLOAT32"; shift ;;
       --int8)           dtype="INT8";    shift ;;
       --verbose|-v)     verbose="true";  shift ;;
+      --skip-build|-B)  skip_build="true"; shift ;;
       --help)
         echo ""
         echo "  Usage: $0 cluster [flags]"
         echo ""
-        echo "  --dtype FLOAT32|FLOAT16|INT8   activation wire format (default FLOAT32)"
-        echo "  --float16 / --fp16             shorthand for --dtype FLOAT16"
+        echo "  --dtype FLOAT32|FLOAT16|INT8   activation wire format (default FLOAT16)"
+        echo "  --float16 / --fp16             shorthand for --dtype FLOAT16 (default)"
+        echo "  --float32                      shorthand for --dtype FLOAT32 (debug/reference)"
         echo "  --int8                         shorthand for --dtype INT8"
         echo "  --max-tokens N                 max generated tokens    (default 200)"
         echo "  --temperature F                sampling temperature     (default 0.7)"
+        echo "  --heap SIZE                    JVM heap size e.g. 4g 8g (default 4g)"
+        echo "  --skip-build / -B              skip mvn test-compile (use last build)"
         echo "  --verbose / -v                 show full gRPC + Maven logs"
         echo ""
         exit 0 ;;
@@ -59,9 +67,12 @@ cmd_cluster() {
   done
 
   # ── Build ─────────────────────────────────────────────────────────────────
-  if [[ "$verbose" == "true" ]]; then
+  if [[ "$skip_build" == "true" ]]; then
+    warn "Skipping build (-B / --skip-build)"
+  elif [[ "$verbose" == "true" ]]; then
     info "Building integration module (test-compile)..."
     "$MVN" test-compile -pl integration -am --no-transfer-progress
+    ok "Build OK"
   else
     # Hide OpenAPI generator banner and Maven noise — only show on error
     build_log=$(mktemp)
@@ -72,11 +83,11 @@ cmd_cluster() {
       err "Build failed"
     fi
     rm -f "$build_log"
+    ok "Build OK"
   fi
-  ok "Build OK"
   echo ""
 
-  warn "Starting 3-node cluster  (dtype=${dtype}  max_tokens=${max_tokens}  temperature=${temperature})"
+  warn "Starting 3-node cluster  (dtype=${dtype}  max_tokens=${max_tokens}  temperature=${temperature}  heap=${heap})"
   [[ "$verbose" == "true" ]] && warn "Verbose mode ON — gRPC logs visible"
   warn "Ctrl-C to stop all nodes and exit"
   echo ""
@@ -84,14 +95,20 @@ cmd_cluster() {
   local hyper_verbose_flag=""
   [[ "$verbose" == "true" ]] && hyper_verbose_flag="-DHYPER_VERBOSE=true"
 
-  # exec:exec (not exec:java) launches a real separate JVM.
-  # %classpath expands to the full test-scope classpath, so ClusterHarness can
-  # fork NodeMain correctly via ProcessBuilder.
+  # On Windows, mvn.cmd routes arguments through cmd.exe which interprets
+  # %classpath as an environment variable and strips it — Maven never sees its
+  # own %classpath expansion token, so the JVM launches with an empty classpath
+  # and throws NoClassDefFoundError immediately.
+  # Fix: escape as %%classpath so cmd.exe outputs a literal %classpath for Maven.
+  # On Linux/macOS bash does not interpret %, so %classpath works unmodified.
+  local cp_token="%classpath"
+  case "$OSTYPE" in msys*|cygwin*|win32*) cp_token="%%classpath" ;; esac
+
   exec "$MVN" exec:exec \
     -pl integration \
     -Dexec.executable=java \
     -Dexec.classpathScope=test \
-    -Dexec.args="--enable-preview -Xms256m -Xmx2g -XX:+UseZGC ${hyper_verbose_flag} -DDTYPE=${dtype} -DMAX_TOKENS=${max_tokens} -DTEMPERATURE=${temperature} -classpath %classpath io.hyperstack4j.integration.ConsoleMain" \
+    -Dexec.args="--enable-preview --enable-native-access=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Xms512m -Xmx${heap} -XX:+UseG1GC -XX:+AlwaysPreTouch ${hyper_verbose_flag} -DDTYPE=${dtype} -DMAX_TOKENS=${max_tokens} -DTEMPERATURE=${temperature} -classpath ${cp_token} io.hyperstack4j.integration.ConsoleMain" \
     --no-transfer-progress \
     -q
 }
@@ -236,10 +253,12 @@ usage() {
   echo -e "${CYAN}hyper-stack-4j dev runner${NC}"
   echo ""
   echo -e "  ${GREEN}$0 cluster${NC}                   Boot 3-node cluster + interactive prompt console"
-  echo    "  $0 cluster --dtype FLOAT16    Use FLOAT16 compressed activations"
+  echo    "  $0 cluster --dtype FLOAT32    Use FLOAT32 activations (debug; default is FLOAT16)"
   echo    "  $0 cluster --dtype INT8       Use INT8  compressed activations"
   echo    "  $0 cluster --max-tokens 512   Override max generation tokens (default 200)"
   echo    "  $0 cluster --temperature 0.9  Override sampling temperature  (default 0.7)"
+  echo    "  $0 cluster --heap 8g          Override JVM heap size         (default 4g)"
+  echo    "  $0 cluster --skip-build / -B  Skip mvn test-compile (use last build)"
   echo    "  $0 cluster --verbose          Show full gRPC + Maven logs"
   echo    "  $0 cluster --help             All cluster flags"
   echo ""
@@ -258,7 +277,7 @@ usage() {
   echo    "  Environment overrides:"
   echo    "    MVN=/path/to/mvn ./run-me.sh test"
   echo    "    PORT=9090 ./run-me.sh curl-demo"
-  echo    "    DTYPE=FLOAT16 MAX_TOKENS=512 ./run-me.sh cluster"
+  echo    "    DTYPE=FLOAT16 MAX_TOKENS=512 HEAP=8g ./run-me.sh cluster"
   echo ""
 }
 
