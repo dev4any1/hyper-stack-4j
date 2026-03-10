@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Dmytro Soloviov (soulaway)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package io.hyperstack4j.registry;
 
 /**
