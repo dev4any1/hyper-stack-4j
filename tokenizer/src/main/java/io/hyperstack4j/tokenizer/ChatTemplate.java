@@ -115,6 +115,37 @@ public interface ChatTemplate {
     }
 
     /**
+     * TinyLlama / Zephyr chat template.
+     * <|system|>\n{system}</s>\n<|user|>\n{user}</s>\n<|assistant|>\n
+     *
+     * TinyLlama-1.1B-Chat-v1.0 is fine-tuned with this exact format.
+     * Using any other template (e.g. ChatML) sends tokens the model has
+     * never seen and produces complete garbage output.
+     */
+    static ChatTemplate tinyllama() {
+        return new ChatTemplate() {
+            @Override
+            public String format(List<ChatMessage> messages) {
+                StringBuilder sb = new StringBuilder();
+                for (ChatMessage msg : messages) {
+                    String tag = switch (msg.role()) {
+                        case "assistant" -> "<|assistant|>";
+                        case "system"    -> "<|system|>";
+                        default          -> "<|user|>";
+                    };
+                    sb.append(tag).append("\n")
+                      .append(msg.content())
+                      .append("</s>\n");
+                }
+                sb.append("<|assistant|>\n");
+                return sb.toString();
+            }
+
+            @Override public String modelType() { return "tinyllama"; }
+        };
+    }
+
+    /**
      * ChatML template — used by Qwen, OpenHermes, and as default fallback.
      * <|im_start|>role\n{content}<|im_end|>\n
      */
@@ -140,10 +171,12 @@ public interface ChatTemplate {
 
     /** All built-in templates keyed by modelType. */
     Map<String, ChatTemplate> BUILT_IN = Map.of(
-            "llama3",  llama3(),
-            "mistral", mistral(),
-            "gemma",   gemma(),
-            "chatml",  chatml()
+            "llama3",     llama3(),
+            "mistral",    mistral(),
+            "gemma",      gemma(),
+            "chatml",     chatml(),
+            "tinyllama",  tinyllama(),
+            "zephyr",     tinyllama()   // same format, alternate lookup key
     );
 
     /**

@@ -317,19 +317,42 @@ public final class GgufReader implements AutoCloseable {
             buf.get(sc);
             float d = f16ToF32(buf.getShort());
 
-            // 16 sub-blocks of 16 elements each
-            for (int i = 0; i < 256; i++) {
-                int    qi  = i % 128;
-                int    hi  = i / 4;         // index into qh
-                int    hsh = (i / 16) % 4;  // which 2-bit pair in qh byte
+            // Port of llama.cpp dequantize_row_q6_K.
+            // Each 256-element block is split into two halves of 128 elements.
+            // Within each half, l iterates 0..31 and produces four outputs:
+            //   out[l+  0] ← ql[qlBase+l]    low  nibble | qh[qhBase+l] bits 1:0 → sub-block sc[scBase + l/16]
+            //   out[l+ 32] ← ql[qlBase+l+32] low  nibble | qh[qhBase+l] bits 3:2 → sc[scBase + l/16 + 2]
+            //   out[l+ 64] ← ql[qlBase+l]    high nibble | qh[qhBase+l] bits 5:4 → sc[scBase + l/16 + 4]
+            //   out[l+ 96] ← ql[qlBase+l+32] high nibble | qh[qhBase+l] bits 7:6 → sc[scBase + l/16 + 6]
+            // All four share the SAME qh byte qh[qhBase+l]; the earlier flat loop
+            // used hi=i/4 which is wrong for outputs at l+32, l+64, l+96.
+            for (int half = 0; half < 2; half++) {
+                int qlBase = half * 64;
+                int qhBase = half * 32;
+                int scBase = half * 8;
+                for (int l = 0; l < 32; l++) {
+                    int is   = l / 16;
+                    int qlL  = ql[qlBase + l]      & 0xFF;
+                    int qlL2 = ql[qlBase + l + 32] & 0xFF;
+                    int qhL  = qh[qhBase + l]      & 0xFF;
 
-                int low = (ql[qi] >> ((i / 128) * 4)) & 0x0F; // 4 low bits
-                int high = (qh[hi] >> (hsh * 2)) & 0x03;      // 2 high bits
-                int q6 = (high << 4 | low) - 32;              // signed 6-bit
+                    int q1 = (qlL  & 0x0F) | (((qhL >> 0) & 3) << 4); q1 -= 32;
+                    int q2 = (qlL2 & 0x0F) | (((qhL >> 2) & 3) << 4); q2 -= 32;
+                    int q3 = (qlL  >> 4)   | (((qhL >> 4) & 3) << 4); q3 -= 32;
+                    int q4 = (qlL2 >> 4)   | (((qhL >> 6) & 3) << 4); q4 -= 32;
 
-                int subBlock = i / 16;
-                float scale = d * sc[subBlock]; // sc is signed int8
-                out[oi++] = scale * q6;
+                    // sc[] is int8 — Java bytes are signed, which is what we want.
+                    float d1 = d * sc[scBase + is];
+                    float d2 = d * sc[scBase + is + 2];
+                    float d3 = d * sc[scBase + is + 4];
+                    float d4 = d * sc[scBase + is + 6];
+
+                    out[oi + l]      = d1 * q1;
+                    out[oi + l + 32] = d2 * q2;
+                    out[oi + l + 64] = d3 * q3;
+                    out[oi + l + 96] = d4 * q4;
+                }
+                oi += 128;
             }
         }
         return out;
