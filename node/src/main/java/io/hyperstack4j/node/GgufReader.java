@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
@@ -90,8 +91,23 @@ public final class GgufReader implements AutoCloseable {
 
 	public static GgufReader open(Path file) throws IOException {
 		FileChannel channel = FileChannel.open(file, StandardOpenOption.READ);
+
+		// Detect GGUF start offset — plain .gguf files start at 0; .llamafile
+		// files are ZIP polyglots with the GGUF stored as an uncompressed entry.
+		long ggufOffset = 0L;
+		ByteBuffer magic4 = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+		channel.read(magic4, 0);
+		magic4.flip();
+		int firstMagic = magic4.getInt();
+		if (firstMagic != GGUF_MAGIC) {
+			log.info("File does not start with GGUF magic (0x" + Integer.toHexString(firstMagic)
+					+ ") — trying ZIP/llamafile scan…");
+			ggufOffset = findGgufOffsetInZip(channel);
+			log.info("Found GGUF data at byte offset " + ggufOffset + " inside llamafile");
+		}
+
 		ByteBuffer header = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
-		channel.read(header, 0);
+		channel.read(header, ggufOffset);
 		header.flip();
 
 		int magic = header.getInt();
@@ -100,14 +116,15 @@ public final class GgufReader implements AutoCloseable {
 		long kvCount = header.getLong();
 
 		if (magic != GGUF_MAGIC)
-			throw new IOException("Not a GGUF file (magic=0x" + Integer.toHexString(magic) + ")");
+			throw new IOException("Not a GGUF file (magic=0x" + Integer.toHexString(magic)
+					+ " at offset " + ggufOffset + ")");
 		if (version < 2 || version > 3)
 			throw new IOException("Unsupported GGUF version: " + version);
 
 		log.info("GGUF v" + version + " — tensors=" + tensorCount + " metadata=" + kvCount);
 
-		// Parse using a streaming position tracker
-		long[] pos = { 24L };
+		// Parse using a streaming position tracker (absolute file positions)
+		long[] pos = { ggufOffset + 24L };
 
 		// Read metadata
 		Map<String, Object> metadata = new HashMap<>();
@@ -134,8 +151,14 @@ public final class GgufReader implements AutoCloseable {
 			tensors.put(name, new TensorInfo(name, dims, type, offset, nelems));
 		}
 
-		// Align to ALIGNMENT bytes
-		long aligned = ((pos[0] + ALIGNMENT - 1) / ALIGNMENT) * ALIGNMENT;
+		// Align to ALIGNMENT bytes — the GGUF spec aligns relative to the start
+		// of the GGUF header, not the start of the file.  When the GGUF is
+		// embedded inside a llamafile the header starts at ggufOffset, so we
+		// must compute the aligned position relative to ggufOffset and then
+		// add it back to get the absolute file position.
+		long relativePos = pos[0] - ggufOffset;
+		long alignedRelative = ((relativePos + ALIGNMENT - 1) / ALIGNMENT) * ALIGNMENT;
+		long aligned = ggufOffset + alignedRelative;
 
 		log.info("Data section starts at byte " + aligned);
 		return new GgufReader(channel, metadata, tensors, aligned);
@@ -412,6 +435,141 @@ public final class GgufReader implements AutoCloseable {
 			}
 		}
 		return out;
+	}
+
+	// ── Llamafile / ZIP polyglot support ─────────────────────────────────────
+
+	/**
+	 * Locate the byte offset of a GGUF file stored uncompressed inside a ZIP
+	 * archive (the llamafile format).
+	 *
+	 * Algorithm:
+	 *   1. Scan the last ≤65557 bytes for the ZIP End-of-Central-Directory
+	 *      signature (0x06054b50, little-endian).
+	 *   2. Read the central-directory offset + size from the EOCD record.
+	 *   3. Walk central-directory entries looking for one whose filename ends
+	 *      with ".gguf".
+	 *   4. Read the matching local-file-header to determine where the raw
+	 *      (uncompressed) GGUF bytes begin.
+	 *
+	 * Only ZIP32 is required here — TinyLlama Q5_K_M is ~700 MB which fits
+	 * comfortably within ZIP32 limits.
+	 */
+	static long findGgufOffsetInZip(FileChannel channel) throws IOException {
+		long fileSize = channel.size();
+
+		// ── Step 1: find EOCD ────────────────────────────────────────────────
+		// EOCD is 22 bytes + optional comment (max 65535 bytes).
+		// We scan the last 65557 bytes backwards for the signature 0x06054b50.
+		// To guard against false positives in binary data we validate that the
+		// found record's fields are internally consistent before accepting it.
+		int searchLen = (int) Math.min(fileSize, 65535 + 22);
+		long searchStart = fileSize - searchLen;
+
+		ByteBuffer tail = ByteBuffer.allocate(searchLen).order(ByteOrder.LITTLE_ENDIAN);
+		while (tail.hasRemaining()) {
+			int r = channel.read(tail, searchStart + tail.position());
+			if (r < 0) break;
+		}
+		tail.flip();
+		int actualLen = tail.limit();
+
+		// Scan backwards; accept the first candidate whose cd-offset + cd-size
+		// is geometrically consistent (CD must end at or before the EOCD position).
+		// We intentionally do NOT validate the comment-length field — the real
+		// llamafile binary may not end exactly at the EOCD boundary.
+		long cdOffset = -1;
+		long cdSize   = -1;
+		for (int i = actualLen - 22; i >= 0; i--) {
+			if ((tail.getInt(i) & 0xFFFFFFFFL) != 0x06054b50L) continue;
+
+			long candidateCdSize   = tail.getInt(i + 12) & 0xFFFFFFFFL;
+			long candidateCdOffset = tail.getInt(i + 16) & 0xFFFFFFFFL;
+
+			// Geometry checks — reject obvious false positives in binary data.
+			long eocdAbsPos = searchStart + i;
+			if (candidateCdSize == 0)                                  continue; // empty CD
+			if (candidateCdSize > eocdAbsPos)                          continue; // impossibly large
+			if (candidateCdOffset + candidateCdSize > eocdAbsPos)      continue; // CD overlaps EOCD
+			if (candidateCdOffset >= fileSize)                         continue; // offset out of file
+
+			cdOffset = candidateCdOffset;
+			cdSize   = candidateCdSize;
+			log.info("EOCD found at abs-offset " + eocdAbsPos
+					+ "  cdOffset=" + cdOffset + "  cdSize=" + cdSize);
+			break;
+		}
+
+		if (cdOffset < 0)
+			throw new IOException(
+					"No valid ZIP EOCD record found — file is neither a GGUF nor a llamafile ZIP");
+
+		if (cdSize == 0)
+			throw new IOException("ZIP central directory is empty — no entries in llamafile");
+
+		// ── Step 2: read central directory ───────────────────────────────────
+		ByteBuffer cd = ByteBuffer.allocate((int) cdSize).order(ByteOrder.LITTLE_ENDIAN);
+		while (cd.hasRemaining()) {
+			int r = channel.read(cd, cdOffset + cd.position());
+			if (r < 0) break;
+		}
+		cd.flip();
+
+		// ── Step 3: walk entries looking for *.gguf ──────────────────────────
+		// Central-directory entry fixed header is 46 bytes followed by
+		// filename / extra / comment variable fields.
+		int cdPos = 0;
+		while (cdPos + 46 <= cd.limit()) {
+			long sig = cd.getInt(cdPos) & 0xFFFFFFFFL;
+			if (sig != 0x02014b50L) break; // not a CD entry signature — stop
+
+			int fnLen      = cd.getShort(cdPos + 28) & 0xFFFF;
+			int extraLen   = cd.getShort(cdPos + 30) & 0xFFFF;
+			int commentLen = cd.getShort(cdPos + 32) & 0xFFFF;
+			long localHdrOffset = cd.getInt(cdPos + 42) & 0xFFFFFFFFL;
+
+			int nextEntry = cdPos + 46 + fnLen + extraLen + commentLen;
+			if (nextEntry > cd.limit()) break; // truncated entry — stop
+
+			byte[] fnBytes = new byte[fnLen];
+			cd.position(cdPos + 46);
+			cd.get(fnBytes);
+			String filename = new String(fnBytes, StandardCharsets.UTF_8);
+			log.info("ZIP entry: " + filename + "  localHdr=" + localHdrOffset);
+
+			if (filename.endsWith(".gguf")) {
+				// ── Step 4: read local file header ───────────────────────────
+				// Local header: 30-byte fixed part + filename + extra.
+				ByteBuffer lh = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN);
+				while (lh.hasRemaining()) {
+					int r = channel.read(lh, localHdrOffset + lh.position());
+					if (r < 0) break;
+				}
+				lh.flip();
+
+				if (lh.limit() < 30)
+					throw new IOException(
+							"Truncated local file header at offset " + localHdrOffset);
+
+				long lhSig = lh.getInt(0) & 0xFFFFFFFFL;
+				if (lhSig != 0x04034b50L)
+					throw new IOException(
+							"Bad local file header signature 0x" + Long.toHexString(lhSig)
+							+ " at offset " + localHdrOffset);
+
+				int localFnLen    = lh.getShort(26) & 0xFFFF;
+				int localExtraLen = lh.getShort(28) & 0xFFFF;
+
+				long dataStart = localHdrOffset + 30L + localFnLen + localExtraLen;
+				log.info("GGUF data starts at abs-offset " + dataStart);
+				return dataStart;
+			}
+
+			cdPos = nextEntry;
+		}
+
+		throw new IOException(
+				"No .gguf entry found in the ZIP central directory of this llamafile");
 	}
 
 	// ── I/O helpers ───────────────────────────────────────────────────────────

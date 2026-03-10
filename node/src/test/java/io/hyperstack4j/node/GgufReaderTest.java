@@ -302,4 +302,171 @@ class GgufReaderTest {
 		Files.write(gguf, buf.array());
 		return gguf;
 	}
+
+	// ── Llamafile / ZIP polyglot tests ────────────────────────────────────────
+
+	/**
+	 * Wraps a GGUF file inside a minimal ZIP archive (stored, not deflated) with a
+	 * fake APE/MZ executable prefix, mimicking the real llamafile format.
+	 *
+	 * ZIP layout:
+	 *   [ape-stub bytes]
+	 *   [local file header + GGUF data]
+	 *   [central directory entry]
+	 *   [end-of-central-directory record]
+	 */
+	private static Path buildLlamafile(Path dir, String ggufEntryName, byte[] ggufBytes) throws IOException {
+		byte[] stub = "MZqFpD\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0".getBytes(
+				java.nio.charset.StandardCharsets.ISO_8859_1);
+
+		byte[] fn = ggufEntryName.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		int fnLen = fn.length;
+
+		// Local file header (30 + fnLen bytes)
+		int localHeaderSize = 30 + fnLen;
+		long localHeaderOffset = stub.length; // absolute offset in file
+
+		ByteBuffer lh = ByteBuffer.allocate(localHeaderSize).order(ByteOrder.LITTLE_ENDIAN);
+		lh.putInt(0x04034b50);  // signature
+		lh.putShort((short) 20); // version needed
+		lh.putShort((short) 0);  // general purpose flags
+		lh.putShort((short) 0);  // compression: STORED
+		lh.putShort((short) 0);  // mod time
+		lh.putShort((short) 0);  // mod date
+		lh.putInt(0);            // CRC-32 (not validated by GgufReader)
+		lh.putInt(ggufBytes.length); // compressed size
+		lh.putInt(ggufBytes.length); // uncompressed size
+		lh.putShort((short) fnLen);  // filename length
+		lh.putShort((short) 0);      // extra field length
+		lh.put(fn);
+
+		// Central directory entry (46 + fnLen bytes)
+		ByteBuffer cde = ByteBuffer.allocate(46 + fnLen).order(ByteOrder.LITTLE_ENDIAN);
+		cde.putInt(0x02014b50);  // signature
+		cde.putShort((short) 20); // version made by
+		cde.putShort((short) 20); // version needed
+		cde.putShort((short) 0);  // flags
+		cde.putShort((short) 0);  // compression: STORED
+		cde.putShort((short) 0);  // mod time
+		cde.putShort((short) 0);  // mod date
+		cde.putInt(0);            // CRC-32
+		cde.putInt(ggufBytes.length); // compressed size
+		cde.putInt(ggufBytes.length); // uncompressed size
+		cde.putShort((short) fnLen);  // filename length
+		cde.putShort((short) 0);      // extra length
+		cde.putShort((short) 0);      // comment length
+		cde.putShort((short) 0);      // disk number start
+		cde.putShort((short) 0);      // internal attributes
+		cde.putInt(0);                // external attributes
+		cde.putInt((int) localHeaderOffset); // relative offset of local header
+		cde.put(fn);
+
+		long cdOffset = localHeaderOffset + localHeaderSize + ggufBytes.length;
+		int  cdSize   = cde.capacity();
+
+		// End-of-central-directory (22 bytes)
+		ByteBuffer eocd = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN);
+		eocd.putInt(0x06054b50);  // signature
+		eocd.putShort((short) 0); // disk number
+		eocd.putShort((short) 0); // start disk
+		eocd.putShort((short) 1); // entries on disk
+		eocd.putShort((short) 1); // total entries
+		eocd.putInt(cdSize);      // central directory size
+		eocd.putInt((int) cdOffset); // central directory offset
+		eocd.putShort((short) 0); // comment length
+
+		// Assemble full file
+		int totalSize = stub.length + localHeaderSize + ggufBytes.length + cdSize + 22;
+		ByteBuffer file = ByteBuffer.allocate(totalSize);
+		file.put(stub);
+		file.put(lh.array());
+		file.put(ggufBytes);
+		file.put(cde.array());
+		file.put(eocd.array());
+
+		Path out = dir.resolve(ggufEntryName.replace(".gguf", ".llamafile"));
+		Files.write(out, file.array());
+		return out;
+	}
+
+	@Test
+	@DisplayName("open() finds GGUF embedded in a llamafile ZIP polyglot")
+	void llamafile_opens_and_reads_metadata(@TempDir Path tempDir) throws IOException {
+		// Build a minimal GGUF with some F32 tensor data
+		float[] values = { 1.0f, 2.0f, 3.0f, 4.0f };
+		ByteBuffer data = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+		for (float v : values) data.putFloat(v);
+
+		Path gguf = buildMinimalGguf(tempDir, "inner", 0 /* F32 */, values.length, data.array());
+		byte[] ggufBytes = Files.readAllBytes(gguf);
+
+		// Wrap in a fake llamafile (APE stub + ZIP)
+		Path llamafile = buildLlamafile(tempDir, "inner.gguf", ggufBytes);
+
+		// GgufReader must open the llamafile transparently
+		try (GgufReader r = GgufReader.open(llamafile)) {
+			float[] result = r.tensor("inner");
+			assertThat(result).containsExactly(1.0f, 2.0f, 3.0f, 4.0f);
+		}
+	}
+
+	@Test
+	@DisplayName("findGgufOffsetInZip returns offset matching plain-GGUF data start")
+	void findGgufOffsetInZip_offset_points_to_gguf_magic(@TempDir Path tempDir) throws IOException {
+		// Build GGUF and wrap it
+		byte[] data = new byte[32]; // one F32 block (8 floats, but nelems=8 not exercised here)
+		Path gguf = buildMinimalGguf(tempDir, "magic_check", 0, 8, data);
+		byte[] ggufBytes = Files.readAllBytes(gguf);
+
+		Path llamafile = buildLlamafile(tempDir, "magic_check.gguf", ggufBytes);
+
+		try (java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(
+				llamafile, java.nio.file.StandardOpenOption.READ)) {
+			long offset = GgufReader.findGgufOffsetInZip(ch);
+
+			// The GGUF magic must appear at the discovered offset
+			ByteBuffer magic = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
+			ch.read(magic, offset);
+			magic.flip();
+			assertThat(magic.getInt()).isEqualTo(0x46554747); // "GGUF"
+		}
+	}
+
+	@Test
+	@DisplayName("open() still works on a plain .gguf (non-llamafile) file")
+	void plain_gguf_still_opens_correctly(@TempDir Path tempDir) throws IOException {
+		float[] values = { -1.0f, 0.0f, 1.0f, 2.0f };
+		ByteBuffer data = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+		for (float v : values) data.putFloat(v);
+
+		Path gguf = buildMinimalGguf(tempDir, "plain", 0 /* F32 */, values.length, data.array());
+
+		try (GgufReader r = GgufReader.open(gguf)) {
+			float[] result = r.tensor("plain");
+			assertThat(result).containsExactly(-1.0f, 0.0f, 1.0f, 2.0f);
+		}
+	}
+
+	@Test
+	@DisplayName("llamafile with Q8_0 tensor round-trips correctly")
+	void llamafile_q8_0_tensor_round_trips(@TempDir Path tempDir) throws IOException {
+		// Build a minimal Q8_0 block: f16 scale + 32 signed bytes
+		// scale = 0.5 (FP16: 0x3800), values = 0..31 → dequant = 0.5 * value
+		short scale16 = 0x3800; // 0.5f in FP16
+		ByteBuffer blockData = ByteBuffer.allocate(2 + 32).order(ByteOrder.LITTLE_ENDIAN);
+		blockData.putShort(scale16);
+		for (int i = 0; i < 32; i++) blockData.put((byte) i);
+
+		Path gguf = buildMinimalGguf(tempDir, "q8test", 8 /* Q8_0 */, 32, blockData.array());
+		byte[] ggufBytes = Files.readAllBytes(gguf);
+		Path llamafile = buildLlamafile(tempDir, "q8test.gguf", ggufBytes);
+
+		try (GgufReader r = GgufReader.open(llamafile)) {
+			float[] result = r.tensor("q8test");
+			assertThat(result).hasSize(32);
+			for (int i = 0; i < 32; i++) {
+				assertThat(result[i]).isCloseTo(0.5f * i, within(0.001f));
+			}
+		}
+	}
 }
