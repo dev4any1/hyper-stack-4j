@@ -56,6 +56,7 @@ public final class GgufReader implements AutoCloseable {
 	private static final int GGML_TYPE_Q8_0 = 8;
 	private static final int GGML_TYPE_Q4_K = 12;
 	private static final int GGML_TYPE_Q6_K = 14;
+	private static final int GGML_TYPE_Q5_K = 13;
 	private static final int GGML_TYPE_BF16 = 30;
 
 	// Metadata value type IDs
@@ -233,6 +234,7 @@ public final class GgufReader implements AutoCloseable {
 		case GGML_TYPE_Q8_0 -> loadQ8_0(info);
 		case GGML_TYPE_Q4_0 -> loadQ4_0(info);
 		case GGML_TYPE_Q4_K -> loadQ4_K(info);
+		case GGML_TYPE_Q5_K -> loadQ5_K(info);
 		case GGML_TYPE_Q6_K -> loadQ6_K(info);
 		default -> throw new UnsupportedOperationException(
 				"Unsupported tensor type " + info.type + " for tensor " + info.name);
@@ -348,8 +350,48 @@ public final class GgufReader implements AutoCloseable {
 		return out;
 	}
 
-	/**
-	 * Extract 6-bit scale[j] from Q4_K scales block (12 bytes, 8 scales + 8 mins
+	// Q5_K: superblocks of 256 elements
+	// [d:f16][dmin:f16][scales:12 bytes][qh:32 bytes][qs:128 bytes] = 176 bytes per 256 elements
+	// Each element: 4 low bits from qs + 1 high bit from qh → 5-bit value [0,31]
+	// Same scale/min extraction as Q4_K.
+	private float[] loadQ5_K(TensorInfo info) throws IOException {
+		int n = (int) info.nelems;
+		int QK_K = 256;
+		int blockBytes = 176; // 2+2+12+32+128
+		int nBlocks = n / QK_K;
+		ByteBuffer buf = readBytes(info.offset, (long) nBlocks * blockBytes);
+		float[] out = new float[n];
+		int oi = 0;
+		byte[] sc = new byte[12];
+		byte[] qh = new byte[32];  // high 1 bit per element, packed
+		byte[] qs = new byte[128]; // low 4 bits per element, packed as nibbles
+
+		for (int b = 0; b < nBlocks; b++) {
+			float d    = f16ToF32(buf.getShort());
+			float dmin = f16ToF32(buf.getShort());
+			buf.get(sc);
+			buf.get(qh);
+			buf.get(qs);
+
+			// 8 sub-blocks of 32 elements each — same scale/min layout as Q4_K
+			for (int j = 0; j < 8; j++) {
+				float scale = d    * getScale4K(sc, j);
+				float min   = dmin * getMin4K(sc, j);
+
+				for (int l = 0; l < 32; l++) {
+					int pos  = j * 32 + l;
+					// Low nibble from qs: alternating nibbles
+					int lo = (qs[pos >>> 1] >>> (4 * (pos & 1))) & 0xF;
+					// High bit from qh: one bit per element, packed LSB-first
+					int hi = (qh[pos >>> 3] >>> (pos & 7)) & 1;
+					out[oi++] = scale * (lo | (hi << 4)) - min;
+				}
+			}
+		}
+		return out;
+	}
+
+	/** (12 bytes, 8 scales + 8 mins
 	 * each 6-bit).
 	 */
 	private static int getScale4K(byte[] sc, int j) {
@@ -461,8 +503,6 @@ public final class GgufReader implements AutoCloseable {
 		// ── Step 1: find EOCD ────────────────────────────────────────────────
 		// EOCD is 22 bytes + optional comment (max 65535 bytes).
 		// We scan the last 65557 bytes backwards for the signature 0x06054b50.
-		// To guard against false positives in binary data we validate that the
-		// found record's fields are internally consistent before accepting it.
 		int searchLen = (int) Math.min(fileSize, 65535 + 22);
 		long searchStart = fileSize - searchLen;
 
@@ -474,38 +514,107 @@ public final class GgufReader implements AutoCloseable {
 		tail.flip();
 		int actualLen = tail.limit();
 
-		// Scan backwards; accept the first candidate whose cd-offset + cd-size
-		// is geometrically consistent (CD must end at or before the EOCD position).
-		// We intentionally do NOT validate the comment-length field — the real
-		// llamafile binary may not end exactly at the EOCD boundary.
-		long cdOffset = -1;
-		long cdSize   = -1;
+		// Scan backwards for EOCD signature.
+		// Accept a candidate if it looks geometrically consistent OR if its
+		// cd-offset/size fields carry the ZIP64 sentinel value 0xFFFFFFFF.
+		int eocdIdx = -1;
 		for (int i = actualLen - 22; i >= 0; i--) {
 			if ((tail.getInt(i) & 0xFFFFFFFFL) != 0x06054b50L) continue;
 
 			long candidateCdSize   = tail.getInt(i + 12) & 0xFFFFFFFFL;
 			long candidateCdOffset = tail.getInt(i + 16) & 0xFFFFFFFFL;
+			long eocdAbsPos        = searchStart + i;
 
-			// Geometry checks — reject obvious false positives in binary data.
-			long eocdAbsPos = searchStart + i;
-			if (candidateCdSize == 0)                                  continue; // empty CD
-			if (candidateCdSize > eocdAbsPos)                          continue; // impossibly large
-			if (candidateCdOffset + candidateCdSize > eocdAbsPos)      continue; // CD overlaps EOCD
-			if (candidateCdOffset >= fileSize)                         continue; // offset out of file
+			// ZIP64 sentinel: at least one field is 0xFFFFFFFF — defer geometry
+			// check to after we've read the real values from the ZIP64 EOCD.
+			boolean zip64 = (candidateCdSize == 0xFFFFFFFFL || candidateCdOffset == 0xFFFFFFFFL);
+			if (!zip64) {
+				if (candidateCdSize == 0)                             continue;
+				if (candidateCdSize > eocdAbsPos)                     continue;
+				if (candidateCdOffset + candidateCdSize > eocdAbsPos) continue;
+				if (candidateCdOffset >= fileSize)                    continue;
+			}
 
-			cdOffset = candidateCdOffset;
-			cdSize   = candidateCdSize;
-			log.info("EOCD found at abs-offset " + eocdAbsPos
-					+ "  cdOffset=" + cdOffset + "  cdSize=" + cdSize);
+			eocdIdx = i;
 			break;
 		}
 
-		if (cdOffset < 0)
+		if (eocdIdx < 0)
 			throw new IOException(
 					"No valid ZIP EOCD record found — file is neither a GGUF nor a llamafile ZIP");
 
+		// ── Step 1b: resolve ZIP64 if needed ─────────────────────────────────
+		// ZIP64 EOCD locator sits immediately before the EOCD (20 bytes).
+		// ZIP64 EOCD record contains the real 64-bit cdOffset and cdSize.
+		//
+		// ZIP64 EOCD locator layout:
+		//   +0  sig           4  = 0x07064b50
+		//   +4  disk of z64   4
+		//   +8  z64 EOCD off  8  ← absolute offset of the ZIP64 EOCD record
+		//  +16  total disks   4
+		//
+		// ZIP64 EOCD record layout:
+		//   +0  sig            4  = 0x06064b50
+		//   +4  record size    8
+		//  +12  version made   2
+		//  +14  version needed 2
+		//  +16  this disk      4
+		//  +20  CD start disk  4
+		//  +24  entries here   8
+		//  +32  entries total  8
+		//  +40  CD size        8  ← what we want
+		//  +48  CD offset      8  ← what we want
+		long rawCdSize   = tail.getInt(eocdIdx + 12) & 0xFFFFFFFFL;
+		long rawCdOffset = tail.getInt(eocdIdx + 16) & 0xFFFFFFFFL;
+		long cdSize;
+		long cdOffset;
+
+		if (rawCdSize == 0xFFFFFFFFL || rawCdOffset == 0xFFFFFFFFL) {
+			log.info("ZIP64 sentinels detected — reading ZIP64 EOCD");
+			long eocdAbsPos  = searchStart + eocdIdx;
+			long locatorPos  = eocdAbsPos - 20;
+			if (locatorPos < 0)
+				throw new IOException("ZIP64 EOCD locator would be before start of file");
+
+			ByteBuffer loc = ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN);
+			while (loc.hasRemaining()) {
+				int r = channel.read(loc, locatorPos + loc.position());
+				if (r < 0) break;
+			}
+			loc.flip();
+
+			if (loc.limit() < 20 || (loc.getInt(0) & 0xFFFFFFFFL) != 0x07064b50L)
+				throw new IOException(
+						"ZIP64 EOCD locator signature not found at offset " + locatorPos);
+
+			long z64EocdAbsPos = loc.getLong(8);
+			log.info("ZIP64 EOCD record at abs-offset " + z64EocdAbsPos);
+
+			ByteBuffer z64 = ByteBuffer.allocate(56).order(ByteOrder.LITTLE_ENDIAN);
+			while (z64.hasRemaining()) {
+				int r = channel.read(z64, z64EocdAbsPos + z64.position());
+				if (r < 0) break;
+			}
+			z64.flip();
+
+			if (z64.limit() < 56 || (z64.getInt(0) & 0xFFFFFFFFL) != 0x06064b50L)
+				throw new IOException(
+						"ZIP64 EOCD record signature not found at offset " + z64EocdAbsPos);
+
+			cdSize   = z64.getLong(40);
+			cdOffset = z64.getLong(48);
+			log.info("ZIP64 EOCD: cdOffset=" + cdOffset + "  cdSize=" + cdSize);
+		} else {
+			cdSize   = rawCdSize;
+			cdOffset = rawCdOffset;
+			log.info("EOCD found at abs-offset " + (searchStart + eocdIdx)
+					+ "  cdOffset=" + cdOffset + "  cdSize=" + cdSize);
+		}
+
 		if (cdSize == 0)
 			throw new IOException("ZIP central directory is empty — no entries in llamafile");
+		if (cdOffset >= fileSize)
+			throw new IOException("ZIP CD offset " + cdOffset + " is beyond file size " + fileSize);
 
 		// ── Step 2: read central directory ───────────────────────────────────
 		ByteBuffer cd = ByteBuffer.allocate((int) cdSize).order(ByteOrder.LITTLE_ENDIAN);
@@ -539,6 +648,13 @@ public final class GgufReader implements AutoCloseable {
 
 			if (filename.endsWith(".gguf")) {
 				// ── Step 4: read local file header ───────────────────────────
+				// In ZIP64, the local header offset in the CD entry may itself be
+				// a sentinel 0xFFFFFFFF — real value is in the CD extra field.
+				if (localHdrOffset == 0xFFFFFFFFL) {
+					localHdrOffset = readZip64ExtraLocalOffset(cd, cdPos + 46 + fnLen, extraLen);
+					log.info("ZIP64 local header offset from extra field: " + localHdrOffset);
+				}
+
 				// Local header: 30-byte fixed part + filename + extra.
 				ByteBuffer lh = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN);
 				while (lh.hasRemaining()) {
@@ -570,6 +686,37 @@ public final class GgufReader implements AutoCloseable {
 
 		throw new IOException(
 				"No .gguf entry found in the ZIP central directory of this llamafile");
+	}
+
+	/**
+	 * Extract the local-header offset from a ZIP64 extra field block.
+	 *
+	 * ZIP64 extended information extra field (id=0x0001):
+	 *   +0  header id    2  = 0x0001
+	 *   +2  data size    2
+	 *   +4  [optional fields in order: uncompressed size(8), compressed size(8),
+	 *        local header offset(8), disk number(4)]
+	 *
+	 * Fields are only present if the corresponding CD fixed field held 0xFFFFFFFF.
+	 * We scan all extra blocks to find the ZIP64 one, then read the offset field.
+	 */
+	private static long readZip64ExtraLocalOffset(ByteBuffer cd, int extraStart, int extraLen)
+			throws IOException {
+		int pos = extraStart;
+		int end = extraStart + extraLen;
+		while (pos + 4 <= end) {
+			int headerId = cd.getShort(pos) & 0xFFFF;
+			int dataSize = cd.getShort(pos + 2) & 0xFFFF;
+			if (headerId == 0x0001) {
+				// ZIP64 extra block — offset field is at +4+16 (skip two 8-byte
+				// size fields that precede it).  Guard against truncation.
+				int offsetPos = pos + 4 + 16;
+				if (offsetPos + 8 <= end)
+					return cd.getLong(offsetPos);
+			}
+			pos += 4 + dataSize;
+		}
+		throw new IOException("ZIP64 extra field with local-header offset not found");
 	}
 
 	// ── I/O helpers ───────────────────────────────────────────────────────────

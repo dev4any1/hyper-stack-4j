@@ -291,7 +291,7 @@ mvn verify -DskipITs
 
 ## Requirements
 
-- **JDK 21+**
+- **JDK 25+**
 - **Maven 3.9+**
 - **CUDA 12.x** (GPU nodes only — not needed for CPU mode)
 - **10GbE networking** recommended for multi-machine clusters
@@ -300,14 +300,14 @@ mvn verify -DskipITs
 
 | Concern | Technology |
 |---------|-----------|
-| Language | Java 21 |
+| Language | Java 25 |
 | Build | Maven (multi-module) |
 | GPU compute | JCuda / JCublas 12.x |
 | Distributed state | Hazelcast 5.x |
 | Leader election | Hazelcast CP FencedLock |
 | Data plane | gRPC + Protocol Buffers |
 | REST | Javalin 6.x |
-| Concurrency | Java 21 Virtual Threads + `CompletableFuture` |
+| Concurrency | Java 25 Virtual Threads + `CompletableFuture` |
 | KV Cache L1 | JCuda CudaBuffer (GPU VRAM) |
 | KV Cache L2 | Caffeine (JVM heap, W-TinyLFU) |
 | Circuit breaker | Resilience4j |

@@ -1,7 +1,7 @@
 ================================================================================
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
-  JDK 21 · Maven · Java-native · Commodity GPU Cluster
+  JDK 25 · Maven · Java-native · Commodity GPU Cluster
   Last updated: 2026-03-10 (session 6)
 ================================================================================
 
@@ -46,7 +46,7 @@ Far cheaper than one 64GB GPU.
 3. MAVEN PROJECT STRUCTURE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Multi-module Maven project, JDK 21 throughout. All modules BUILD SUCCESS as of
+Multi-module Maven project, JDK 25 throughout. All modules BUILD SUCCESS as of
 2026-03-10 (session 6). 72 production Java source files, 56 test files, 353 @Test methods.
 
   hyper-stack-4j/               <- parent POM
@@ -104,7 +104,7 @@ Artifact ID: hyper-stack-4j
 Version:     0.1.0-SNAPSHOT
 
 Key dependency versions:
-  java.version                  21
+  java.version                  25
   hazelcast.version             5.4.0
   grpc.version                  1.63.0
   protobuf.version              3.25.3
@@ -338,7 +338,7 @@ Example metrics endpoint:
   Data plane              gRPC (activations)
   Control plane           Hazelcast (commands, state, events)
   Priority queuing        PriorityBlockingQueue — HIGH=3, NORMAL=1, LOW=1
-  Concurrency             Java 21 Virtual Threads + CompletableFuture
+  Concurrency             Java 25 Virtual Threads + CompletableFuture
 
   BatchConfig:
   ----------------------------------------
@@ -654,7 +654,7 @@ IMPLEMENTATION:
     encode(float[], ActivationDtype) → byte[]
     decode(byte[], ActivationDtype)  → float[]
 
-    FLOAT16 uses manual IEEE 754 bit manipulation (no JNI, pure Java 21):
+    FLOAT16 uses manual IEEE 754 bit manipulation (no JNI, pure Java 25):
       floatToHalf(float)  — handles normals, subnormals, ±∞, NaN, over/underflow
       halfToFloat(short)  — full round-trip
 
@@ -808,7 +808,7 @@ sampling:
 12. TECHNOLOGY SUMMARY
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Language              Java 21
+  Language              Java 25
   Build                 Maven (multi-module)
   GPU compute           JCuda / JCublas 12.x
   Distributed state     Hazelcast 5.x
@@ -816,7 +816,7 @@ sampling:
   Data plane            gRPC + Protocol Buffers
   Cluster messaging     Hazelcast Topics + IMap listeners
   RDMA networking       jVerbs
-  Concurrency           Java 21 Virtual Threads + CompletableFuture
+  Concurrency           Java 25 Virtual Threads + CompletableFuture
   REST API server       Javalin 6.x (NO Spring Boot)
   REST API spec         OpenAPI 3.0 — jaxrs-spec generator
   KV Cache L1           JCuda CudaBuffer (GPU VRAM)
