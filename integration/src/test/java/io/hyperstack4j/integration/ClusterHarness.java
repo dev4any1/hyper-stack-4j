@@ -71,18 +71,48 @@ public final class ClusterHarness implements AutoCloseable {
 	 * receives the model path as a CLI arg and loads its layer shard via
 	 * CpuForwardPassHandler when loadShard() is called.
 	 *
+	 * Uses the default 22-layer split (TinyLlama). For other models call
+	 * {@link #threeNodes(String, int)} and pass the actual layer count.
+	 *
 	 * @param modelPath path to a GGUF file, e.g.
 	 *                  "/models/TinyLlama-1.1B-Chat.Q4_K_M.gguf" Pass null for stub
 	 *                  mode (no real model).
 	 */
 	public static ClusterHarness threeNodes(String modelPath) {
+		return threeNodes(modelPath, TOTAL_LAYERS);
+	}
+
+	/**
+	 * Create a 3-node cluster for a model with {@code totalLayers} transformer
+	 * layers. Shard boundaries are computed by dividing layers as evenly as
+	 * possible across the three nodes (ceiling-first distribution).
+	 *
+	 * <pre>
+	 *  22 layers → [0,8)  [8,15)  [15,22)   (TinyLlama-1.1B)
+	 *  16 layers → [0,6)  [6,11)  [11,16)   (Llama-3.2-1B)
+	 * </pre>
+	 *
+	 * @param modelPath   path to a GGUF/llamafile, or null for stub mode
+	 * @param totalLayers actual number of transformer layers in the model
+	 */
+	public static ClusterHarness threeNodes(String modelPath, int totalLayers) {
+		if (totalLayers < 3)
+			throw new IllegalArgumentException("totalLayers must be >= 3 to split across 3 nodes, got: " + totalLayers);
+
+		// Ceiling-first: give the extra layers to the earlier nodes.
+		int base = totalLayers / 3;
+		int extra = totalLayers % 3;
+		int end1 = base + (extra > 0 ? 1 : 0); // node-1 layer count
+		int end2 = end1 + base + (extra > 1 ? 1 : 0); // node-2 layer count
+		// node-3 gets the rest up to totalLayers
+
 		return new ClusterHarness(List.of(
 				new NodeSpec("node-1", "localhost", NODE_1_PORT,
-						new ProcessPipelineClient.ShardConfig(0, 8, true, false)),
+						new ProcessPipelineClient.ShardConfig(0, end1, true, false)),
 				new NodeSpec("node-2", "localhost", NODE_2_PORT,
-						new ProcessPipelineClient.ShardConfig(8, 15, false, false)),
+						new ProcessPipelineClient.ShardConfig(end1, end2, false, false)),
 				new NodeSpec("node-3", "localhost", NODE_3_PORT,
-						new ProcessPipelineClient.ShardConfig(15, 22, false, true))),
+						new ProcessPipelineClient.ShardConfig(end2, totalLayers, false, true))),
 				modelPath);
 	}
 

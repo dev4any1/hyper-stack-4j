@@ -118,7 +118,7 @@ public final class CpuForwardPassHandler implements ForwardPassHandler {
 		// Embedding / output projection (conditional on shard position)
 		this.tokenEmbd = hasEmbeddings ? r.tensor("token_embd.weight") : null;
 		this.outputNorm = hasOutputProj ? r.tensor("output_norm.weight") : null;
-		this.outputProj = hasOutputProj ? r.tensor("output.weight") : null;
+		this.outputProj = hasOutputProj ? loadOutputProjection(r) : null;
 
 		// Per-layer weights
 		attnNorm = new float[L][];
@@ -147,6 +147,19 @@ public final class CpuForwardPassHandler implements ForwardPassHandler {
 
 		log.info("Shard loaded — " + L + " layers, " + (hasEmbeddings ? "with embeddings, " : "")
 				+ (hasOutputProj ? "with output projection" : "no output projection"));
+	}
+
+	/**
+	 * Loads the output projection weights, falling back to token_embd.weight when
+	 * output.weight is absent (Llama 3.2 and other tied-embedding models set
+	 * llama.tie_word_embeddings=true and omit the separate output weight tensor).
+	 */
+	private static float[] loadOutputProjection(GgufReader r) throws IOException {
+		if (r.hasTensor("output.weight")) {
+			return r.tensor("output.weight");
+		}
+		log.info("output.weight not found — model uses tied embeddings; reusing token_embd.weight as output projection");
+		return r.tensor("token_embd.weight");
 	}
 
 	// ── ForwardPassHandler ────────────────────────────────────────────────────

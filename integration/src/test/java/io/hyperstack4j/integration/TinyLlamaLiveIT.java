@@ -26,6 +26,7 @@ import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.node.ActivationDtype;
 import io.hyperstack4j.node.GgufReader;
+import io.hyperstack4j.node.LlamaConfig;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
@@ -70,7 +71,11 @@ class TinyLlamaLiveIT {
 		org.junit.jupiter.api.Assumptions.assumeTrue(modelPath != null,
 				"Skipping TinyLlamaLiveIT — model not found. Set it.model.path or MODEL_PATH.");
 
-		harness = ClusterHarness.threeNodes(modelPath);
+		int totalLayers;
+		try (GgufReader cfgReader = GgufReader.open(Path.of(modelPath))) {
+			totalLayers = LlamaConfig.from(cfgReader).numLayers();
+		}
+		harness = ClusterHarness.threeNodes(modelPath, totalLayers);
 		harness.start();
 
 		GgufTokenizer tokenizer;

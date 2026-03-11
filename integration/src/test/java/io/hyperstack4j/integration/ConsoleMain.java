@@ -19,6 +19,7 @@ import io.hyperstack4j.kvcache.GpuKVCache;
 import io.hyperstack4j.kvcache.KVCacheManager;
 import io.hyperstack4j.node.ActivationDtype;
 import io.hyperstack4j.node.GgufReader;
+import io.hyperstack4j.node.LlamaConfig;
 import io.hyperstack4j.sampler.Sampler;
 import io.hyperstack4j.sampler.SamplingParams;
 import io.hyperstack4j.tokenizer.ChatMessage;
@@ -237,7 +238,15 @@ public final class ConsoleMain {
 			throws Exception {
 		print(CYAN + "▶ Starting 3-node cluster..." + RESET);
 
-		ClusterHarness harness = ClusterHarness.threeNodes(modelPath.isBlank() ? null : modelPath);
+		String resolvedModelPath = modelPath.isBlank() ? null : modelPath;
+		int totalLayers = EmbeddedNodeServer.TOTAL_LAYERS; // default for stub mode / TinyLlama
+		if (resolvedModelPath != null) {
+			try (GgufReader cfgReader = GgufReader.open(Path.of(resolvedModelPath))) {
+				totalLayers = LlamaConfig.from(cfgReader).numLayers();
+			}
+		}
+
+		ClusterHarness harness = ClusterHarness.threeNodes(resolvedModelPath, totalLayers);
 
 		Runtime.getRuntime().addShutdownHook(Thread.ofVirtual().unstarted(() -> {
 			print("\n" + YELLOW + "⏹ Shutting down cluster..." + RESET);

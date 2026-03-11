@@ -28,12 +28,86 @@ WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
 
 Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit.
 
-you> awesome. how are you?
-bot> i'm doing well. How about you?
-     [10 tokens · 3802 ms · FLOAT16]
+you> how are you today?
+bot> I am fine, thank you. How are you
+     [10 tokens · 3668 ms · FLOAT16]
 
-you> I'm good. you are quite fast!
-bot> I'm glad I could help. Have a
-     [10 tokens · 3675 ms · FLOAT16]
+you> ^C 
+
+
+
+robocop@robot:~/dev/hyper/hyper-stack-4j$ MODEL_PATH=/home/robocop/dev/space/TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile MAX_TOKENS=10 TEMPERATURE=0.7 ./run-me.sh cluster -B
+⚠ Skipping build (-B / --skip-build)
+
+⚠ Starting 3-node cluster  (dtype=FLOAT16  max_tokens=10  temperature=0.7  heap=4g)
+⚠ Ctrl-C to stop all nodes and exit
+
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper (file:/usr/share/maven/lib/guava.jar)
+WARNING: Please consider reporting this to the maintainers of class com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+
+  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ 
+  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗
+  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝
+  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗
+  ██║  ██║   ██║   ██║     ███████╗██║  ██║
+  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝
+
+  hyper-stack-4j  ·  3-node cluster  ·  TinyLlama-1.1B-Chat-v1.0.Q5_K_M.llamafile  ·  interactive console
+  dtype=FLOAT16  max_tokens=10  temperature=0.7  nodes=3 (localhost:19092-19094)
+
+▶ Starting 3-node cluster...
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+✔ Cluster ready  (FLOAT16 activations)
+
+Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit.
+
+you> how are you today?
+bot> I am good. How about you?
+     [8 tokens · 3530 ms · FLOAT16]
+
+you> ^C
+
+robocop@robot:~/dev/hyper/hyper-stack-4j$ MODEL_PATH=/home/robocop/dev/space/Meta-Llama-3.2-1B-Instruct-Q8_0.llamafile MAX_TOKENS=10 TEMPERATURE=0.7 ./run-me.sh cluster -B
+⚠ Skipping build (-B / --skip-build)
+
+⚠ Starting 3-node cluster  (dtype=FLOAT16  max_tokens=10  temperature=0.7  heap=4g)
+⚠ Ctrl-C to stop all nodes and exit
+
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper (file:/usr/share/maven/lib/guava.jar)
+WARNING: Please consider reporting this to the maintainers of class com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+
+  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ 
+  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗
+  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝
+  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗
+  ██║  ██║   ██║   ██║     ███████╗██║  ██║
+  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝
+
+  hyper-stack-4j  ·  3-node cluster  ·  Meta-Llama-3.2-1B-Instruct-Q8_0.llamafile  ·  interactive console
+  dtype=FLOAT16  max_tokens=10  temperature=0.7  nodes=3 (localhost:19092-19094)
+
+▶ Starting 3-node cluster...
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4 (file:/home/robocop/.m2/repository/io/grpc/grpc-netty-shaded/1.68.0/grpc-netty-shaded-1.68.0.jar)
+WARNING: Please consider reporting this to the maintainers of class io.grpc.netty.shaded.io.netty.util.internal.PlatformDependent0$4
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+✔ Cluster ready  (FLOAT16 activations)
+
+Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit.
+
+you> how are you today?        
+bot> I'm!!!not!?!??.tokens…) 
+     [10 tokens · 5151 ms · FLOAT16]
+
+you> really? why don't you?
+bot> I'm here to help and provide information, not
+     [10 tokens · 4843 ms · FLOAT16]
 
 you> 

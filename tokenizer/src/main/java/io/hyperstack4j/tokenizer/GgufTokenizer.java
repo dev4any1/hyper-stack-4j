@@ -46,6 +46,8 @@ public final class GgufTokenizer implements Tokenizer {
 
 	// U+2581 LOWER ONE EIGHTH BLOCK — SentencePiece's space prefix character
 	private static final char SP = '\u2581';
+	// U+0120 LATIN SMALL LETTER G WITH CEDILLA — BPE (GPT-2/Llama-3) space prefix
+	private static final char GP = '\u0120';
 
 	private final String[] vocab; // token ID → piece string
 	private final float[] scores; // token ID → BPE score
@@ -196,7 +198,7 @@ public final class GgufTokenizer implements Tokenizer {
 		// streaming callers (which receive one piece at a time) see correct whitespace.
 		// The full decode() path also does this replacement, but streaming builds
 		// fullText directly from decodeToken() pieces without going through decode().
-		return piece.replace(SP, ' ');
+		return piece.replace(SP, ' ').replace(GP, ' ');
 	}
 
 	@Override

@@ -352,8 +352,16 @@ public final class GgufReader implements AutoCloseable {
 
 	// Q5_K: superblocks of 256 elements
 	// [d:f16][dmin:f16][scales:12 bytes][qh:32 bytes][qs:128 bytes] = 176 bytes per 256 elements
-	// Each element: 4 low bits from qs + 1 high bit from qh → 5-bit value [0,31]
-	// Same scale/min extraction as Q4_K.
+	//
+	// Layout mirrors Q4_K's grouped nibble scheme (not interleaved):
+	//   4 groups of 64 elements, each group split into two sub-blocks of 32.
+	//   For group g (0..3), the 32 qs bytes at offset g*32 serve BOTH sub-blocks:
+	//     sub-block 2g+0 (first 32):  low  nibbles of qs[g*32 .. g*32+32)
+	//     sub-block 2g+1 (second 32): high nibbles of the same qs bytes
+	//   The qh byte array is 32 bytes; each byte provides one bit per element l (0..31):
+	//     sub-block 2g+0 uses bit (2*g)   of qh[l]
+	//     sub-block 2g+1 uses bit (2*g+1) of qh[l]
+	//   This matches llama.cpp: m1=1,m2=2 shifted left by 2 each group iteration.
 	private float[] loadQ5_K(TensorInfo info) throws IOException {
 		int n = (int) info.nelems;
 		int QK_K = 256;
@@ -363,8 +371,8 @@ public final class GgufReader implements AutoCloseable {
 		float[] out = new float[n];
 		int oi = 0;
 		byte[] sc = new byte[12];
-		byte[] qh = new byte[32];  // high 1 bit per element, packed
-		byte[] qs = new byte[128]; // low 4 bits per element, packed as nibbles
+		byte[] qh = new byte[32];
+		byte[] qs = new byte[128];
 
 		for (int b = 0; b < nBlocks; b++) {
 			float d    = f16ToF32(buf.getShort());
@@ -373,19 +381,30 @@ public final class GgufReader implements AutoCloseable {
 			buf.get(qh);
 			buf.get(qs);
 
-			// 8 sub-blocks of 32 elements each — same scale/min layout as Q4_K
-			for (int j = 0; j < 8; j++) {
-				float scale = d    * getScale4K(sc, j);
-				float min   = dmin * getMin4K(sc, j);
+			int qi = 0; // index into qs, advances by 32 per group
+			for (int g = 0; g < 4; g++) {
+				int s0 = g * 2;
+				int s1 = s0 + 1;
+				float scale0 = d    * getScale4K(sc, s0);
+				float min0   = dmin * getMin4K(sc, s0);
+				float scale1 = d    * getScale4K(sc, s1);
+				float min1   = dmin * getMin4K(sc, s1);
+				int hiBit0 = g * 2;       // bit within qh[l] for first  32
+				int hiBit1 = g * 2 + 1;   // bit within qh[l] for second 32
 
+				// First 32 of group: low nibbles, qh bit hiBit0
 				for (int l = 0; l < 32; l++) {
-					int pos  = j * 32 + l;
-					// Low nibble from qs: alternating nibbles
-					int lo = (qs[pos >>> 1] >>> (4 * (pos & 1))) & 0xF;
-					// High bit from qh: one bit per element, packed LSB-first
-					int hi = (qh[pos >>> 3] >>> (pos & 7)) & 1;
-					out[oi++] = scale * (lo | (hi << 4)) - min;
+					int lo = qs[qi + l] & 0x0F;
+					int hi = (qh[l] >>> hiBit0) & 1;
+					out[oi++] = scale0 * (lo | (hi << 4)) - min0;
 				}
+				// Second 32 of group: high nibbles of same qs bytes, qh bit hiBit1
+				for (int l = 0; l < 32; l++) {
+					int lo = (qs[qi + l] >>> 4) & 0x0F;
+					int hi = (qh[l] >>> hiBit1) & 1;
+					out[oi++] = scale1 * (lo | (hi << 4)) - min1;
+				}
+				qi += 32;
 			}
 		}
 		return out;
@@ -539,9 +558,15 @@ public final class GgufReader implements AutoCloseable {
 			break;
 		}
 
-		if (eocdIdx < 0)
-			throw new IOException(
-					"No valid ZIP EOCD record found — file is neither a GGUF nor a llamafile ZIP");
+		if (eocdIdx < 0) {
+			// Real llamafiles (cosmopolitan APE binaries) sometimes have OS-specific
+			// PE/Mach-O sections appended AFTER the ZIP's EOCD, pushing it more than
+			// 65557 bytes from the end.  Fall back to a forward scan: walk the file
+			// from the beginning looking for a ZIP local-file-header (0x04034b50)
+			// whose filename ends with ".gguf".
+			log.info("EOCD backward scan failed — trying forward local-header scan for .gguf entry");
+			return findGgufOffsetByForwardScan(channel);
+		}
 
 		// ── Step 1b: resolve ZIP64 if needed ─────────────────────────────────
 		// ZIP64 EOCD locator sits immediately before the EOCD (20 bytes).
@@ -686,6 +711,109 @@ public final class GgufReader implements AutoCloseable {
 
 		throw new IOException(
 				"No .gguf entry found in the ZIP central directory of this llamafile");
+	}
+
+	/**
+	 * Fallback for llamafiles where the ZIP EOCD is not in the final 65557 bytes
+	 * (e.g., cosmopolitan APE binaries with a large PE/Mach-O overlay appended
+	 * after the ZIP).
+	 *
+	 * Algorithm: scan the file forward in 1 MiB chunks, searching for a ZIP local
+	 * file header signature (0x04034b50) whose embedded filename ends with ".gguf".
+	 * Returns the absolute byte offset of the raw (uncompressed) GGUF data.
+	 *
+	 * To avoid misidentifying random bytes as a header, we do a lightweight
+	 * sanity-check on each candidate: the filename length must be ≤ 512 bytes,
+	 * the compression method must be 0 (STORED), and the filename must end
+	 * with ".gguf".
+	 */
+	private static long findGgufOffsetByForwardScan(FileChannel channel) throws IOException {
+		final long fileSize  = channel.size();
+		final int  CHUNK     = 1 << 20; // 1 MiB
+		final long SIG       = 0x04034b50L;
+
+		// We keep a 4-byte "carry" so we don't miss a signature that straddles
+		// two consecutive chunks.
+		byte[] carry = new byte[3];
+		int    carryLen = 0;
+		long   chunkStart = 0;
+
+		ByteBuffer buf = ByteBuffer.allocate(CHUNK).order(ByteOrder.LITTLE_ENDIAN);
+
+		while (chunkStart < fileSize) {
+			buf.clear();
+			// Prepend carry bytes from previous chunk.
+			for (int i = 0; i < carryLen; i++)
+				buf.put(carry[i]);
+
+			long readPos = chunkStart;
+			while (buf.hasRemaining() && readPos < fileSize) {
+				int r = channel.read(buf, readPos + (buf.position() - carryLen));
+				if (r < 0) break;
+				readPos += r;
+			}
+			buf.flip();
+			int limit = buf.limit();
+
+			// Search this chunk for the local-file-header signature.
+			for (int i = 0; i + 3 < limit; i++) {
+				if ((buf.getInt(i) & 0xFFFFFFFFL) != SIG) continue;
+
+				// Candidate at absolute offset = chunkStart - carryLen + i.
+				long absPos = chunkStart - carryLen + i;
+
+				// Need at least 30 bytes for the fixed local header.
+				if (absPos + 30 > fileSize) continue;
+
+				// Read the fixed part of the local header (30 bytes).
+				ByteBuffer lh = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN);
+				while (lh.hasRemaining()) {
+					int r = channel.read(lh, absPos + lh.position());
+					if (r < 0) break;
+				}
+				lh.flip();
+				if (lh.limit() < 30) continue;
+
+				// Sanity-check: compression must be STORED (0).
+				int compression = lh.getShort(8) & 0xFFFF;
+				if (compression != 0) continue;
+
+				int fnLen    = lh.getShort(26) & 0xFFFF;
+				int extraLen = lh.getShort(28) & 0xFFFF;
+
+				// Sanity-check filename length.
+				if (fnLen == 0 || fnLen > 512) continue;
+
+				// Read the filename.
+				if (absPos + 30 + fnLen > fileSize) continue;
+				ByteBuffer fnBuf = ByteBuffer.allocate(fnLen);
+				while (fnBuf.hasRemaining()) {
+					int r = channel.read(fnBuf, absPos + 30 + fnBuf.position());
+					if (r < 0) break;
+				}
+				fnBuf.flip();
+				if (fnBuf.limit() < fnLen) continue;
+
+				String filename = new String(fnBuf.array(), 0, fnLen, StandardCharsets.UTF_8);
+				log.info("Forward scan — ZIP local entry: " + filename + "  at abs-offset " + absPos);
+
+				if (!filename.endsWith(".gguf")) continue;
+
+				long dataStart = absPos + 30L + fnLen + extraLen;
+				log.info("Forward scan — GGUF data starts at abs-offset " + dataStart);
+				return dataStart;
+			}
+
+			// Save the last 3 bytes as carry for the next iteration.
+			carryLen = Math.min(3, limit);
+			for (int i = 0; i < carryLen; i++)
+				carry[i] = buf.get(limit - carryLen + i);
+
+			chunkStart += (limit - carryLen);
+		}
+
+		throw new IOException(
+				"No valid ZIP EOCD record found — file is neither a GGUF nor a llamafile ZIP");
 	}
 
 	/**

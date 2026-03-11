@@ -469,4 +469,113 @@ class GgufReaderTest {
 			}
 		}
 	}
+
+	/**
+	 * Simulates a real cosmopolitan APE llamafile where a large PE/Mach-O overlay
+	 * is appended AFTER the ZIP's EOCD, pushing the EOCD more than 65557 bytes
+	 * from the end of the file.  The backward EOCD scan will fail; the forward
+	 * local-header scan must kick in and still find the embedded GGUF.
+	 */
+	@Test
+	@DisplayName("llamafile with large PE overlay after EOCD uses forward-scan fallback")
+	void llamafile_large_pe_overlay_uses_forward_scan(@TempDir Path tempDir) throws IOException {
+		float[] values = { 5.0f, 6.0f, 7.0f, 8.0f };
+		ByteBuffer data = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+		for (float v : values) data.putFloat(v);
+
+		Path gguf = buildMinimalGguf(tempDir, "overlay_test", 0 /* F32 */, values.length, data.array());
+		byte[] ggufBytes = Files.readAllBytes(gguf);
+
+		// Build the standard llamafile (stub + ZIP).
+		Path base = buildLlamafile(tempDir, "overlay_test.gguf", ggufBytes);
+		byte[] baseBytes = Files.readAllBytes(base);
+
+		// Append 70 000 bytes of "PE overlay" data AFTER the EOCD.  This pushes the
+		// EOCD more than 65557 bytes from the new end-of-file, defeating the standard
+		// backward scan.
+		byte[] overlay = new byte[70_000];
+		java.util.Arrays.fill(overlay, (byte) 0xCC); // INT3 filler, common in PE stubs
+
+		byte[] full = new byte[baseBytes.length + overlay.length];
+		System.arraycopy(baseBytes, 0, full, 0, baseBytes.length);
+		System.arraycopy(overlay, 0, full, baseBytes.length, overlay.length);
+
+		Path llamafile = tempDir.resolve("overlay_test_big.llamafile");
+		Files.write(llamafile, full);
+
+		// GgufReader must transparently fall back to the forward scan and still
+		// load the tensor correctly.
+		try (GgufReader r = GgufReader.open(llamafile)) {
+			float[] result = r.tensor("overlay_test");
+			assertThat(result).containsExactly(5.0f, 6.0f, 7.0f, 8.0f);
+		}
+	}
+
+	/**
+	 * Simulates a llamafile with a very large APE executable stub (> 1 MiB) to
+	 * exercise the chunked forward scan across multiple 1 MiB read windows.
+	 */
+	@Test
+	@DisplayName("llamafile with large APE stub exercises chunked forward scan")
+	void llamafile_large_ape_stub_forward_scan(@TempDir Path tempDir) throws IOException {
+		float[] values = { -3.0f, -2.0f, -1.0f, 0.0f };
+		ByteBuffer data = ByteBuffer.allocate(values.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+		for (float v : values) data.putFloat(v);
+
+		Path gguf = buildMinimalGguf(tempDir, "bigstub", 0 /* F32 */, values.length, data.array());
+		byte[] ggufBytes = Files.readAllBytes(gguf);
+
+		// Build a llamafile whose APE stub is 1.2 MiB (larger than the 1 MiB chunk),
+		// then append a PE overlay so the EOCD is also out of the backward-scan window.
+		byte[] bigStub = new byte[1_200_000];
+		bigStub[0] = 'M'; bigStub[1] = 'Z'; bigStub[2] = 'q'; bigStub[3] = 'F';
+		// The rest is zero — no accidental EOCD/LFH signatures.
+
+		byte[] fn = "bigstub.gguf".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		int fnLen = fn.length;
+
+		// Local file header.
+		ByteBuffer lh = ByteBuffer.allocate(30 + fnLen).order(ByteOrder.LITTLE_ENDIAN);
+		lh.putInt(0x04034b50); lh.putShort((short) 20); lh.putShort((short) 0);
+		lh.putShort((short) 0); lh.putShort((short) 0); lh.putShort((short) 0);
+		lh.putInt(0); lh.putInt(ggufBytes.length); lh.putInt(ggufBytes.length);
+		lh.putShort((short) fnLen); lh.putShort((short) 0); lh.put(fn);
+
+		// Central directory entry.
+		ByteBuffer cde = ByteBuffer.allocate(46 + fnLen).order(ByteOrder.LITTLE_ENDIAN);
+		cde.putInt(0x02014b50); cde.putShort((short) 20); cde.putShort((short) 20);
+		cde.putShort((short) 0); cde.putShort((short) 0); cde.putShort((short) 0); cde.putShort((short) 0);
+		cde.putInt(0); cde.putInt(ggufBytes.length); cde.putInt(ggufBytes.length);
+		cde.putShort((short) fnLen); cde.putShort((short) 0); cde.putShort((short) 0);
+		cde.putShort((short) 0); cde.putShort((short) 0); cde.putInt(0);
+		cde.putInt(bigStub.length); // local header offset = right after stub
+		cde.put(fn);
+
+		long cdOffset = (long) bigStub.length + 30 + fnLen + ggufBytes.length;
+
+		ByteBuffer eocd = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN);
+		eocd.putInt(0x06054b50); eocd.putShort((short) 0); eocd.putShort((short) 0);
+		eocd.putShort((short) 1); eocd.putShort((short) 1);
+		eocd.putInt(cde.capacity()); eocd.putInt((int) cdOffset); eocd.putShort((short) 0);
+
+		// 70 000 byte PE overlay after the EOCD.
+		byte[] overlay = new byte[70_000];
+
+		int total = bigStub.length + 30 + fnLen + ggufBytes.length + cde.capacity() + 22 + overlay.length;
+		ByteBuffer full = ByteBuffer.allocate(total);
+		full.put(bigStub);
+		full.put(lh.array());
+		full.put(ggufBytes);
+		full.put(cde.array());
+		full.put(eocd.array());
+		full.put(overlay);
+
+		Path llamafile = tempDir.resolve("bigstub.llamafile");
+		Files.write(llamafile, full.array());
+
+		try (GgufReader r = GgufReader.open(llamafile)) {
+			float[] result = r.tensor("bigstub");
+			assertThat(result).containsExactly(-3.0f, -2.0f, -1.0f, 0.0f);
+		}
+	}
 }
