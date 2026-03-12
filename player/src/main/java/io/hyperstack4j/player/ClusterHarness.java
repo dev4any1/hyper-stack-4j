@@ -1,4 +1,20 @@
-package io.hyperstack4j.integration;
+/*
+ * Copyright 2026 Dmytro Soloviov (soulaway)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package io.hyperstack4j.player;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -202,20 +218,21 @@ public final class ClusterHarness implements AutoCloseable {
 			cmd.add("-Djava.util.logging.config.file=" + q.getAbsolutePath());
 		}
 
-		cmd.addAll(java.util.List.of("-cp", classpath, "io.hyperstack4j.integration.NodeMain", nodeId,
-				String.valueOf(port)));
+		cmd.addAll(java.util.List.of("-cp", classpath, NodeMain.class.getName(), nodeId, String.valueOf(port)));
 		if (modelPath != null)
 			cmd.add(modelPath);
 
 		ProcessBuilder pb = new ProcessBuilder(cmd);
 		pb.redirectErrorStream(false);
-		// Always PIPE stderr — we read it in waitForReady if startup fails.
-		// In verbose mode we also inherit it so it shows in the console.
 		if (verbose) {
 			pb.redirectError(ProcessBuilder.Redirect.INHERIT);
+		} else {
+			// DISCARD stderr in quiet mode — do NOT leave it as PIPE.
+			// Netty/gRPC debug output can exceed the 64 KB OS pipe buffer before
+			// READY is printed, causing the child to block on stderr writes and
+			// deadlock with the parent waiting on waitForReady().
+			pb.redirectError(ProcessBuilder.Redirect.DISCARD);
 		}
-		// (non-verbose: stderr is left as PIPE so waitForReady can drain it on failure)
-
 		Process proc = pb.start();
 		log.info("Forked JVM for node [" + nodeId + "] PID=" + proc.pid());
 		return proc;
@@ -256,10 +273,12 @@ public final class ClusterHarness implements AutoCloseable {
 
 	/** Drain stderr from a (possibly dead) process into a string. */
 	private static String drainStderr(Process proc) {
+		// stderr is discarded in quiet mode (Redirect.DISCARD) to prevent pipe
+		// deadlock — run with --verbose to see node stderr on startup failures.
 		try {
 			var errStream = proc.getErrorStream();
-			if (errStream == null)
-				return "";
+			if (errStream == null || errStream.available() == 0)
+				return "(stderr discarded — rerun with --verbose for details)";
 			byte[] bytes = errStream.readAllBytes();
 			return new String(bytes, java.nio.charset.StandardCharsets.UTF_8).strip();
 		} catch (Exception e) {

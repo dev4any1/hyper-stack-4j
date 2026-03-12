@@ -23,6 +23,7 @@
 		<module>tokenizer</module>
 		<module>sampler</module>
 		<module>health</module>
+		<module>player</module>
 		<module>integration</module>
 	</modules>
 
@@ -120,7 +121,11 @@
 				<artifactId>health</artifactId>
 				<version>${project.version}</version>
 			</dependency>
-
+			<dependency>
+				<groupId>io.hyperstack4j</groupId>
+				<artifactId>player</artifactId>
+				<version>${project.version}</version>
+			</dependency>
 			<!-- Hazelcast -->
 			<dependency>
 				<groupId>com.hazelcast</groupId>

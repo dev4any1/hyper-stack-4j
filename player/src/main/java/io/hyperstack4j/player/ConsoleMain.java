@@ -1,0 +1,430 @@
+/*
+ * Copyright 2026 Dmytro Soloviov (soulaway)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.hyperstack4j.player;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.logging.Logger;
+
+import io.hyperstack4j.coordinator.GenerationLoop;
+import io.hyperstack4j.coordinator.GenerationResult;
+import io.hyperstack4j.coordinator.InferenceRequest;
+import io.hyperstack4j.coordinator.RequestPriority;
+import io.hyperstack4j.coordinator.TokenConsumer;
+import io.hyperstack4j.kvcache.CpuKVCache;
+import io.hyperstack4j.kvcache.GpuKVCache;
+import io.hyperstack4j.kvcache.KVCacheManager;
+import io.hyperstack4j.node.ActivationDtype;
+import io.hyperstack4j.node.CpuForwardPassHandler;
+import io.hyperstack4j.node.GgufReader;
+import io.hyperstack4j.node.LlamaConfig;
+import io.hyperstack4j.node.LocalInferencePipeline;
+import io.hyperstack4j.registry.NodeDescriptor;
+import io.hyperstack4j.registry.NodeStatus;
+import io.hyperstack4j.registry.ShardMap;
+import io.hyperstack4j.registry.ShardPlanner;
+import io.hyperstack4j.sampler.Sampler;
+import io.hyperstack4j.sampler.SamplingParams;
+import io.hyperstack4j.tokenizer.ChatMessage;
+import io.hyperstack4j.tokenizer.GgufTokenizer;
+import io.hyperstack4j.tokenizer.Tokenizer;
+
+/**
+ * Interactive REPL that runs a model using the hyper‑stack engine.
+ *
+ * Can operate in two modes: - cluster mode (default): forks 3 node JVMs (as
+ * before) - local mode (--local): runs all nodes in‑process, no child JVMs
+ *
+ * Command‑line arguments (overrides environment variables / system properties):
+ * --model-path PATH Path to GGUF file (required) --dtype FLOAT32|FLOAT16|INT8
+ * Activation wire format (default: FLOAT16) --max-tokens N Max generated tokens
+ * (default: 200) --temperature F Sampling temperature (default: 0.7) --heap
+ * SIZE JVM heap size hint (ignored when run as jar) --local Use in‑process
+ * nodes instead of forking --nodes N Number of in‑process nodes (default: 3,
+ * only with --local) --verbose Show full gRPC + Maven logs (ignored in local
+ * mode) --help Show this help
+ *
+ * Example: java --enable-preview --enable-native-access=ALL-UNNAMED \
+ * --add-opens java.base/java.lang=ALL-UNNAMED \ --add-opens
+ * java.base/java.nio=ALL-UNNAMED \ -jar hyper-player.jar --model-path
+ * /models/tinyllama.gguf --local
+ */
+public final class ConsoleMain {
+
+	// ANSI colours (same as original)
+	private static final String CYAN = "\033[0;36m";
+	private static final String GREEN = "\033[0;32m";
+	private static final String YELLOW = "\033[1;33m";
+	private static final String DIM = "\033[2m";
+	private static final String RESET = "\033[0m";
+	private static final String BOLD = "\033[1m";
+
+	private static final Logger log = Logger.getLogger(ConsoleMain.class.getName());
+
+	// Silence logging unless verbose (same as original)
+	static {
+		boolean verbose = Boolean.getBoolean("HYPER_VERBOSE")
+				|| "true".equalsIgnoreCase(System.getenv("HYPER_VERBOSE"));
+		if (!verbose) {
+			java.util.logging.LogManager.getLogManager().reset();
+			java.util.logging.Logger.getLogger("").setLevel(java.util.logging.Level.OFF);
+			for (String ns : new String[] { "io.grpc", "io.netty", "io.hyperstack4j", "com.google", "org.slf4j", "" }) {
+				java.util.logging.Logger.getLogger(ns).setLevel(java.util.logging.Level.OFF);
+			}
+		}
+	}
+
+	// Argument holders
+	private static String modelPath = null;
+	private static ActivationDtype dtype = ActivationDtype.FLOAT16;
+	private static int maxTokens = 200;
+	private static float temperature = 0.7f;
+	private static boolean localMode = false;
+	private static int nodeCount = 3;
+	private static boolean verbose = false;
+	private static boolean help = false;
+
+	public static void main(String[] args) throws Exception {
+		parseArgs(args);
+		if (help) {
+			printHelp();
+			System.exit(0);
+		}
+
+		if (modelPath == null) {
+			System.err.println("ERROR: --model-path is required");
+			printHelp();
+			System.exit(1);
+		}
+
+		if (!Path.of(modelPath).toFile().exists()) {
+			System.err.println("ERROR: Model file not found: " + modelPath);
+			System.exit(1);
+		}
+
+		// Set system properties for legacy code (ClusterHarness reads these)
+		System.setProperty("MODEL_PATH", modelPath);
+		System.setProperty("DTYPE", dtype.name());
+		System.setProperty("MAX_TOKENS", String.valueOf(maxTokens));
+		System.setProperty("TEMPERATURE", String.valueOf(temperature));
+		if (verbose) {
+			System.setProperty("HYPER_VERBOSE", "true");
+		}
+
+		// Show banner
+		banner();
+
+		if (localMode) {
+			runLocalRepl();
+		} else {
+			runClusterRepl();
+		}
+	}
+
+	private static void parseArgs(String[] args) {
+		for (int i = 0; i < args.length; i++) {
+			switch (args[i]) {
+			case "--model-path":
+				if (i + 1 < args.length)
+					modelPath = args[++i];
+				break;
+			case "--dtype":
+				if (i + 1 < args.length)
+					dtype = parseDtype(args[++i]);
+				break;
+			case "--max-tokens":
+				if (i + 1 < args.length)
+					maxTokens = parseInt(args[++i], 200);
+				break;
+			case "--temperature":
+				if (i + 1 < args.length)
+					temperature = parseFloat(args[++i], 0.7f);
+				break;
+			case "--heap":
+				// ignored when run as jar, but consume argument
+				if (i + 1 < args.length)
+					i++;
+				break;
+			case "--local":
+				localMode = true;
+				break;
+			case "--nodes":
+				if (i + 1 < args.length)
+					nodeCount = parseInt(args[++i], 3);
+				break;
+			case "--verbose":
+			case "-v":
+				verbose = true;
+				break;
+			case "--help":
+			case "-h":
+				help = true;
+				return;
+			default:
+				System.err.println("Unknown option: " + args[i]);
+				help = true;
+				return;
+			}
+		}
+	}
+
+	private static void printHelp() {
+		System.out.println();
+		System.out.println("Usage: java -jar hyper-player.jar [options]");
+		System.out.println();
+		System.out.println("Required:");
+		System.out.println("  --model-path PATH          Path to GGUF model file");
+		System.out.println();
+		System.out.println("Options:");
+		System.out.println("  --dtype FLOAT32|FLOAT16|INT8   Activation wire format (default: FLOAT16)");
+		System.out.println("  --max-tokens N             Max generated tokens (default: 200)");
+		System.out.println("  --temperature F            Sampling temperature (default: 0.7)");
+		System.out.println("  --local                    Use in‑process nodes (no forking)");
+		System.out.println("  --nodes N                  Number of in‑process nodes (default: 3, only with --local)");
+		System.out.println("  --verbose, -v              Show more logging");
+		System.out.println("  --help, -h                  Show this help");
+		System.out.println();
+		System.out.println("JVM flags required:");
+		System.out.println("  --enable-preview");
+		System.out.println("  --enable-native-access=ALL-UNNAMED");
+		System.out.println("  --add-opens java.base/java.lang=ALL-UNNAMED");
+		System.out.println("  --add-opens java.base/java.nio=ALL-UNNAMED");
+	}
+
+	// -------------------------------------------------------------------------
+	// Local mode (single JVM, no child processes)
+	// -------------------------------------------------------------------------
+
+	private static void runLocalRepl() throws Exception {
+		print(CYAN + "▶ Starting local in‑process " + nodeCount + "-node pipeline..." + RESET);
+
+		// Read model config and tokenizer from GGUF
+		LlamaConfig config;
+		Tokenizer tokenizer;
+		try (GgufReader reader = GgufReader.open(Path.of(modelPath))) {
+			config = LlamaConfig.from(reader);
+			tokenizer = GgufTokenizer.load(reader);
+		}
+
+		// Create dummy node descriptors for ShardPlanner (one per in‑process node)
+		// Each node needs enough VRAM to hold all layers; we allocate a generous
+		// amount.
+		long vramPerLayerBytes = estimateVramPerLayer(config.hiddenDim()); // rough estimate
+		long nodeVramBytes = config.numLayers() * vramPerLayerBytes * 2; // plenty
+
+		List<NodeDescriptor> nodes = new ArrayList<>();
+		for (int i = 0; i < nodeCount; i++) {
+			nodes.add(new NodeDescriptor("node-" + i, "localhost", 9092 + i, // dummy port, not used
+					nodeVramBytes, nodeVramBytes, NodeStatus.READY, 1.0, Instant.now(), Instant.now()));
+		}
+
+		// Compute shard map
+		ShardMap shardMap = ShardPlanner.create().plan("model", config.numLayers(), vramPerLayerBytes, nodes);
+
+		// Load one CpuForwardPassHandler per shard
+		List<CpuForwardPassHandler> handlers = new ArrayList<>();
+		for (var assignment : shardMap.assignments()) {
+			var context = io.hyperstack4j.node.ShardContext.from(assignment, config.vocabSize(), config.hiddenDim(),
+					config.numHeads());
+			handlers.add(CpuForwardPassHandler.load(Path.of(modelPath), context));
+		}
+
+		// Build in‑process pipeline
+		var pipeline = LocalInferencePipeline.from(shardMap, new ArrayList<>(handlers), config.vocabSize(),
+				config.hiddenDim(), config.numHeads());
+
+		// KV cache (size generous)
+		var kvCache = new KVCacheManager(new GpuKVCache(512L * 1024 * 1024), new CpuKVCache(4096));
+
+		var loop = new GenerationLoop(tokenizer, Sampler.create(), pipeline, kvCache);
+
+		startRepl(loop, tokenizer);
+	}
+
+	// -------------------------------------------------------------------------
+	// Cluster mode (forked JVMs) – same as original, but uses parsed arguments
+	// -------------------------------------------------------------------------
+
+	private static void runClusterRepl() throws Exception {
+		print(CYAN + "▶ Starting 3‑node cluster (forked JVMs)..." + RESET);
+
+		int totalLayers;
+		try (GgufReader cfgReader = GgufReader.open(Path.of(modelPath))) {
+			totalLayers = LlamaConfig.from(cfgReader).numLayers();
+		}
+		ClusterHarness harness = ClusterHarness.threeNodes(modelPath, totalLayers);
+
+		Runtime.getRuntime().addShutdownHook(Thread.ofVirtual().unstarted(() -> {
+			print("\n" + YELLOW + "⏹ Shutting down cluster..." + RESET);
+			try {
+				harness.stop();
+			} catch (Exception e) {
+				/* best effort */ }
+			print(YELLOW + "✔ Cluster stopped." + RESET);
+		}));
+
+		harness.start();
+		print(GREEN + "✔ Cluster ready  (" + dtype + " activations)" + RESET + "\n");
+
+		var pipeline = new ProcessPipelineClient(harness.nodeAddresses(), EmbeddedNodeServer.VOCAB_SIZE, dtype);
+
+		Tokenizer tokenizer;
+		try (GgufReader reader = GgufReader.open(Path.of(modelPath))) {
+			tokenizer = GgufTokenizer.load(reader);
+		}
+
+		var kvCache = new KVCacheManager(new GpuKVCache(512L * 1024 * 1024), new CpuKVCache(4096));
+
+		var loop = new GenerationLoop(tokenizer, Sampler.create(), pipeline, kvCache);
+
+		startRepl(loop, tokenizer);
+	}
+
+	// -------------------------------------------------------------------------
+	// Common REPL loop
+	// -------------------------------------------------------------------------
+
+	private static void startRepl(GenerationLoop loop, Tokenizer tokenizer) throws IOException {
+		SamplingParams params = SamplingParams.defaults().withMaxTokens(maxTokens).withTemperature(temperature);
+
+		print(DIM + "Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit." + RESET);
+		print("");
+
+		BufferedReader stdin = new BufferedReader(new InputStreamReader(System.in));
+		String line;
+
+		while (true) {
+			System.out.print(BOLD + CYAN + "you> " + RESET);
+			System.out.flush();
+
+			line = stdin.readLine();
+			if (line == null)
+				break;
+			line = line.strip();
+			if (line.isEmpty())
+				continue;
+			if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit"))
+				break;
+
+			InferenceRequest request = InferenceRequest.of("model", List.of(ChatMessage.user(line)), params,
+					RequestPriority.NORMAL);
+
+			System.out.print(BOLD + GREEN + "bot> " + RESET);
+			System.out.flush();
+
+			long start = System.currentTimeMillis();
+
+			var consumer = new TokenConsumer() {
+				@Override
+				public void onToken(String piece, int tokenId, int step) {
+					if (!verbose)
+						System.out.print(piece);
+					else
+						System.out.println("[" + step + ":" + tokenId + "]" + piece);
+					System.out.flush();
+				}
+
+				@Override
+				public void onPrefillStart(int promptLen) {
+					System.out.print(DIM + "(prefilling " + promptLen + " tokens…) " + RESET);
+					System.out.flush();
+				}
+
+				@Override
+				public void onPrefillComplete() {
+					System.out.print("\r" + BOLD + GREEN + "bot> " + RESET);
+					System.out.flush();
+				}
+			};
+
+			GenerationResult result = loop.generate(request, consumer);
+
+			long elapsed = System.currentTimeMillis() - start;
+			System.out.println();
+			System.out.printf(DIM + "     [%d tokens · %d ms · %s]" + RESET + "%n", result.generatedTokens(), elapsed,
+					dtype);
+			System.out.println();
+		}
+
+		print(YELLOW + "\nbye." + RESET);
+		System.exit(0);
+	}
+
+	// -------------------------------------------------------------------------
+	// Helpers
+	// -------------------------------------------------------------------------
+
+	private static void banner() {
+		System.out.println();
+		System.out.println(BOLD + CYAN + "  ██╗  ██╗██╗   ██╗██████╗ ███████╗██████╗ ");
+		System.out.println("  ██║  ██║╚██╗ ██╔╝██╔══██╗██╔════╝██╔══██╗");
+		System.out.println("  ███████║ ╚████╔╝ ██████╔╝█████╗  ██████╔╝");
+		System.out.println("  ██╔══██║  ╚██╔╝  ██╔═══╝ ██╔══╝  ██╔══██╗");
+		System.out.println("  ██║  ██║   ██║   ██║     ███████╗██║  ██║");
+		System.out.println("  ╚═╝  ╚═╝   ╚═╝   ╚═╝     ╚══════╝╚═╝  ╚═╝" + RESET);
+		System.out.println();
+
+		String mode = localMode ? "local in‑process" : "cluster (forked JVMs)";
+		System.out.printf("%s  hyper‑stack‑4j  ·  %s  ·  %s  ·  interactive console%s%n", CYAN, mode,
+				Path.of(modelPath).getFileName(), RESET);
+		System.out.printf("%s  dtype=%s  max_tokens=%d  temperature=%.1f  nodes=%d%s%n", DIM, dtype, maxTokens,
+				temperature, localMode ? nodeCount : 3, RESET);
+		System.out.println();
+	}
+
+	private static void print(String msg) {
+		System.out.println(msg);
+		System.out.flush();
+	}
+
+	private static ActivationDtype parseDtype(String s) {
+		if (s == null)
+			return ActivationDtype.FLOAT16;
+		return switch (s.toUpperCase()) {
+		case "FLOAT16", "F16", "FP16" -> ActivationDtype.FLOAT16;
+		case "INT8", "I8" -> ActivationDtype.INT8;
+		default -> ActivationDtype.FLOAT32;
+		};
+	}
+
+	private static int parseInt(String s, int def) {
+		try {
+			return Integer.parseInt(s);
+		} catch (NumberFormatException e) {
+			return def;
+		}
+	}
+
+	private static float parseFloat(String s, float def) {
+		try {
+			return Float.parseFloat(s);
+		} catch (NumberFormatException e) {
+			return def;
+		}
+	}
+
+	// Rough estimate of VRAM per layer (same as
+	// ModelDescriptor.estimateVramPerLayer)
+	private static long estimateVramPerLayer(int hiddenDim) {
+		long params = 4L * hiddenDim * hiddenDim;
+		return (long) (params * 2.0); // assume FP16 for estimation (bytes per param = 2)
+	}
+}

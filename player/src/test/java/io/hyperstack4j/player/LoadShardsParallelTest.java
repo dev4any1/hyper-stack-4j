@@ -1,4 +1,4 @@
-package io.hyperstack4j.integration;
+package io.hyperstack4j.player;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
