@@ -126,7 +126,9 @@ cmd_cluster() {
   local model="${MODEL_PATH:-}"
   local dtype="${DTYPE:-FLOAT16}"
   local max_tokens="${MAX_TOKENS:-200}"
-  local temperature="${TEMPERATURE:-0.7}"
+  local temperature="${TEMPERATURE:-0.6}"
+  local top_k="${TOP_K:-20}"
+  local top_p="${TOP_P:-0.95}"
   local heap="${HEAP:-4g}"
   local verbose="false"
 
@@ -136,6 +138,8 @@ cmd_cluster() {
       --dtype)            dtype="$2";       shift 2 ;;
       --max-tokens)       max_tokens="$2";  shift 2 ;;
       --temperature)      temperature="$2"; shift 2 ;;
+      --top-k)            top_k="$2";       shift 2 ;;
+      --top-p)            top_p="$2";       shift 2 ;;
       --heap)             heap="$2";        shift 2 ;;
       --float16 | --fp16) dtype="FLOAT16";  shift   ;;
       --float32)          dtype="FLOAT32";  shift   ;;
@@ -162,7 +166,9 @@ cmd_cluster() {
         echo ""
         echo "  Generation:"
         echo "    --max-tokens N             max tokens per response   (default 200)"
-        echo "    --temperature F            sampling temperature       (default 0.7)"
+        echo "    --temperature F            sampling temperature       (default 0.6)"
+        echo "    --top-k N                  top-K sampling cutoff     (default 20, 0=disabled)"
+        echo "    --top-p F                  top-p nucleus sampling    (default 0.95, 0=disabled)"
         echo ""
         echo "  JVM:"
         echo "    --heap SIZE                JVM heap  e.g. 4g 8g 16g  (default 4g)"
@@ -198,6 +204,8 @@ cmd_cluster() {
     --dtype "$dtype" \
     --max-tokens "$max_tokens" \
     --temperature "$temperature" \
+    --top-k "$top_k" \
+    --top-p "$top_p" \
     ${verbose_flag}
 }
 
@@ -209,8 +217,10 @@ cmd_console() {
   local model="${MODEL_PATH:-}"
   local dtype="${DTYPE:-FLOAT16}"
   local max_tokens="${MAX_TOKENS:-200}"
-  local temperature="${TEMPERATURE:-0.7}"
+  local temperature="${TEMPERATURE:-0.6}"
   local heap="${HEAP:-4g}"
+  local top_k="${TOP_K:-20}"
+  local top_p="${TOP_P:-0.95}"
   local nodes="${NODES:-3}"
   local verbose="false"
 
@@ -220,6 +230,8 @@ cmd_console() {
       --dtype)            dtype="$2";       shift 2 ;;
       --max-tokens)       max_tokens="$2";  shift 2 ;;
       --temperature)      temperature="$2"; shift 2 ;;
+      --top-k)            top_k="$2";       shift 2 ;;
+      --top-p)            top_p="$2";       shift 2 ;;
       --heap)             heap="$2";        shift 2 ;;
       --nodes)            nodes="$2";       shift 2 ;;
       --float16 | --fp16) dtype="FLOAT16";  shift   ;;
@@ -246,7 +258,9 @@ cmd_console() {
         echo ""
         echo "  Generation:"
         echo "    --max-tokens N             (default 200)"
-        echo "    --temperature F            (default 0.7)"
+        echo "    --temperature F            (default 0.6)"
+        echo "    --top-k N                  top-K sampling cutoff     (default 20, 0=disabled)"
+        echo "    --top-p F                  top-p nucleus sampling    (default 0.95, 0=disabled)"
         echo ""
         echo "  Pipeline:"
         echo "    --nodes N                  number of in-process shards  (default 3)"
@@ -284,6 +298,8 @@ cmd_console() {
     --dtype "$dtype" \
     --max-tokens "$max_tokens" \
     --temperature "$temperature" \
+    --top-k "$top_k" \
+    --top-p "$top_p" \
     --nodes "$nodes" \
     --local \
     ${verbose_flag}
@@ -379,7 +395,9 @@ usage() {
   echo "    --float32                      lossless reference / debug"
   echo "    --int8                         maximum compression"
   echo "    --max-tokens N                 max tokens per response  (default 200)"
-  echo "    --temperature F                sampling temperature      (default 0.7)"
+  echo "    --temperature F                sampling temperature      (default 0.6)"
+  echo "    --top-k N                      top-K sampling cutoff     (default 20, 0=disabled)"
+  echo "    --top-p F                      top-p nucleus sampling    (default 0.95, 0=disabled)"
   echo "    --heap SIZE                    JVM heap e.g. 4g 8g      (default 4g)"
   echo "    --verbose / -v                 show gRPC / node logs"
   echo ""
@@ -387,7 +405,7 @@ usage() {
   echo "    --nodes N                      in-process shard count   (default 3)"
   echo ""
   echo "  Environment overrides (equivalent to their flag counterparts):"
-  echo "    MODEL_PATH  DTYPE  MAX_TOKENS  TEMPERATURE  HEAP  NODES"
+  echo "    MODEL_PATH  DTYPE  MAX_TOKENS  TEMPERATURE  TOP_K  TOP_P  HEAP  NODES"
   echo ""
   echo "  Examples:"
   echo "    MODEL_PATH=/models/tiny.gguf $0 cluster"
