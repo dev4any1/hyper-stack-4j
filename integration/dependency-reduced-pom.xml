@@ -79,7 +79,7 @@
                   </excludes>
                 </filter>
               </filters>
-              <finalName>player</finalName>
+              <finalName>integration</finalName>
             </configuration>
           </execution>
         </executions>

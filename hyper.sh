@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MVN="${MVN:-mvn}"     # override: MVN=/path/to/mvn ./run-me.sh test
+MVN="${MVN:-mvn}"     # override: MVN=/path/to/mvn ./hyper.sh test
 PORT="${PORT:-8080}"  # coordinator REST port
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ cmd_cluster() {
         echo "  --max-tokens N                 max generated tokens    (default 200)"
         echo "  --temperature F                sampling temperature     (default 0.7)"
         echo "  --heap SIZE                    JVM heap size e.g. 4g 8g (default 4g)"
-        echo "  --skip-build / -B              skip mvn test-compile (use last build)"
+        echo "  --skip-build / -B              skip mvn compile (use last build)"
         echo "  --verbose / -v                 show full gRPC + Maven logs"
         echo ""
         exit 0 ;;
@@ -70,13 +70,13 @@ cmd_cluster() {
   if [[ "$skip_build" == "true" ]]; then
     warn "Skipping build (-B / --skip-build)"
   elif [[ "$verbose" == "true" ]]; then
-    info "Building integration module (test-compile)..."
-    "$MVN" test-compile -pl integration -am --no-transfer-progress
+    info "Building player module (compile)..."
+    "$MVN" compile -pl player -am --no-transfer-progress
     ok "Build OK"
   else
     # Hide OpenAPI generator banner and Maven noise — only show on error
     build_log=$(mktemp)
-    if ! "$MVN" test-compile -pl integration -am -q --no-transfer-progress \
+    if ! "$MVN" compile -pl player -am -q --no-transfer-progress \
          > "$build_log" 2>&1; then
       cat "$build_log"
       rm -f "$build_log"
@@ -105,10 +105,10 @@ cmd_cluster() {
   case "$OSTYPE" in msys*|cygwin*|win32*) cp_token="%%classpath" ;; esac
 
   exec "$MVN" exec:exec \
-    -pl integration \
+    -pl player \
     -Dexec.executable=java \
-    -Dexec.classpathScope=test \
-    -Dexec.args="--enable-preview --enable-native-access=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Xms512m -Xmx${heap} -XX:+UseG1GC -XX:+AlwaysPreTouch ${hyper_verbose_flag} -DDTYPE=${dtype} -DMAX_TOKENS=${max_tokens} -DTEMPERATURE=${temperature} -classpath ${cp_token} io.hyperstack4j.integration.ConsoleMain" \
+    -Dexec.classpathScope=compile \
+    -Dexec.args="--enable-preview --enable-native-access=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Xms512m -Xmx${heap} -XX:+UseG1GC -XX:+AlwaysPreTouch ${hyper_verbose_flag} -DDTYPE=${dtype} -DMAX_TOKENS=${max_tokens} -DTEMPERATURE=${temperature} -classpath ${cp_token} io.hyperstack4j.player.ConsoleMain" \
     --no-transfer-progress \
     -q
 }
@@ -152,6 +152,77 @@ cmd_integration_fast() {
   cd "$DIR"
   "$MVN" verify -pl integration -Dit.test=InProcessClusterIT --no-transfer-progress
   ok "InProcessClusterIT passed"
+}
+
+cmd_live() {
+  # ── Resolve model path ────────────────────────────────────────────────────
+  local model="${MODEL_PATH:-}"
+  local heap="${HEAP:-4g}"
+  local skip_build="false"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --heap)          heap="$2";          shift 2 ;;
+      --skip-build|-B) skip_build="true";  shift ;;
+      --help)
+        echo ""
+        echo "  Usage: MODEL_PATH=/path/to/model.gguf $0 live [flags]"
+        echo ""
+        echo "  Runs ModelLiveRunner — 6 real-model smoke checks with coloured output."
+        echo "  Exits 0 if all pass, 1 if any fail."
+        echo ""
+        echo "  MODEL_PATH   path to a GGUF file (required — env var or first arg)"
+        echo "  --heap SIZE  JVM heap size e.g. 4g 8g (default 4g)"
+        echo "  --skip-build / -B  skip mvn compile (use last build)"
+        echo ""
+        exit 0 ;;
+      # allow model path as positional arg too
+      *)
+        if [[ -z "$model" && -f "$1" ]]; then
+          model="$1"; shift
+        else
+          err "Unknown live flag: $1.  Run: $0 live --help"
+        fi ;;
+    esac
+  done
+
+  if [[ -z "$model" ]]; then
+    err "MODEL_PATH is not set.\n  Usage: MODEL_PATH=/path/to/model.gguf $0 live\n     or: $0 live /path/to/model.gguf"
+  fi
+  if [[ ! -f "$model" ]]; then
+    err "Model file not found: $model"
+  fi
+
+  # ── Build ─────────────────────────────────────────────────────────────────
+  cd "$DIR"
+  if [[ "$skip_build" == "true" ]]; then
+    warn "Skipping build (-B / --skip-build)"
+  else
+    build_log=$(mktemp)
+    if ! "$MVN" compile -pl integration -am -q --no-transfer-progress \
+         > "$build_log" 2>&1; then
+      cat "$build_log"
+      rm -f "$build_log"
+      err "Build failed"
+    fi
+    rm -f "$build_log"
+    ok "Build OK"
+  fi
+  echo ""
+
+  info "Running ModelLiveRunner  (model=$(basename "$model")  heap=${heap})"
+  echo ""
+
+  local cp_token="%classpath"
+  case "$OSTYPE" in msys*|cygwin*|win32*) cp_token="%%classpath" ;; esac
+
+  exec "$MVN" exec:exec \
+    -pl integration \
+    -Dexec.executable=java \
+    -Dexec.classpathScope=compile \
+    -Dexec.args="--enable-preview --enable-native-access=ALL-UNNAMED --add-opens java.base/java.lang=ALL-UNNAMED --add-opens java.base/java.nio=ALL-UNNAMED -Xms512m -Xmx${heap} -XX:+UseG1GC -XX:+AlwaysPreTouch -classpath ${cp_token} io.hyperstack4j.integration.ModelLiveRunner ${model}" \
+    --no-transfer-progress \
+    -q
 }
 
 cmd_build() {
@@ -202,7 +273,7 @@ cmd_health_demo() {
 
 ── Run the tests to see every scenario live ─────────────────────────────────────
 
-  ./run-me.sh test-fault
+  ./hyper.sh test-fault
 
 JAVA
 }
@@ -258,9 +329,15 @@ usage() {
   echo    "  $0 cluster --max-tokens 512   Override max generation tokens (default 200)"
   echo    "  $0 cluster --temperature 0.9  Override sampling temperature  (default 0.7)"
   echo    "  $0 cluster --heap 8g          Override JVM heap size         (default 4g)"
-  echo    "  $0 cluster --skip-build / -B  Skip mvn test-compile (use last build)"
+  echo    "  $0 cluster --skip-build / -B  Skip mvn compile (use last build)"
   echo    "  $0 cluster --verbose          Show full gRPC + Maven logs"
   echo    "  $0 cluster --help             All cluster flags"
+  echo ""
+  echo -e "  ${GREEN}$0 live${NC}                      Run ModelLiveRunner — 6 real-model smoke checks"
+  echo    "  $0 live /path/to/model.gguf  Model path as positional arg (or set MODEL_PATH)"
+  echo    "  $0 live --heap 8g            Override JVM heap size (default 4g)"
+  echo    "  $0 live --skip-build / -B    Skip mvn compile (use last build)"
+  echo    "  $0 live --help               All live flags"
   echo ""
   echo    "  $0 test                   Unit tests — all modules, skip integration (~10s)"
   echo    "  $0 test-module <mod>      Unit tests for one module  e.g. coordinator  health"
@@ -275,9 +352,10 @@ usage() {
   echo    "  $0 watch [mod]            Auto-rerun tests on file changes (requires fswatch)"
   echo ""
   echo    "  Environment overrides:"
-  echo    "    MVN=/path/to/mvn ./run-me.sh test"
-  echo    "    PORT=9090 ./run-me.sh curl-demo"
-  echo    "    DTYPE=FLOAT16 MAX_TOKENS=512 HEAP=8g ./run-me.sh cluster"
+  echo    "    MVN=/path/to/mvn ./hyper.sh test"
+  echo    "    PORT=9090 ./hyper.sh curl-demo"
+  echo    "    DTYPE=FLOAT16 MAX_TOKENS=512 HEAP=8g ./hyper.sh cluster"
+  echo    "    MODEL_PATH=/path/to/model.gguf ./hyper.sh live"
   echo ""
 }
 
@@ -289,6 +367,7 @@ shift || true   # drop $1 so remaining args are available as $@
 
 case "$CMD" in
   cluster)           cmd_cluster "$@" ;;
+  live)              cmd_live "$@" ;;
   test)              cmd_test ;;
   test-module)       cmd_test_module "${1:-}" ;;
   test-fault)        cmd_test_fault ;;
