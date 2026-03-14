@@ -96,7 +96,11 @@ public final class ConsoleMain {
 	private static String modelPath = null;
 	private static ActivationDtype dtype = ActivationDtype.FLOAT16;
 	private static int maxTokens = 200;
-	private static float temperature = 0.7f;
+	// Default sampling params for console/cluster runs
+	// temperature=0.6, topK=20, topP=0.95 as requested
+	private static float temperature = 0.6f;
+	private static int topK = 20;
+	private static float topP = 0.95f;
 	private static boolean localMode = false;
 	private static int nodeCount = 3;
 	private static boolean verbose = false;
@@ -125,6 +129,8 @@ public final class ConsoleMain {
 		System.setProperty("DTYPE", dtype.name());
 		System.setProperty("MAX_TOKENS", String.valueOf(maxTokens));
 		System.setProperty("TEMPERATURE", String.valueOf(temperature));
+		System.setProperty("TOP_K", String.valueOf(topK));
+		System.setProperty("TOP_P", String.valueOf(topP));
 		if (verbose) {
 			System.setProperty("HYPER_VERBOSE", "true");
 		}
@@ -154,9 +160,17 @@ public final class ConsoleMain {
 				if (i + 1 < args.length)
 					maxTokens = parseInt(args[++i], 200);
 				break;
+			case "--top-k":
+				if (i + 1 < args.length)
+					topK = parseInt(args[++i], 20);
+				break;
+			case "--top-p":
+				if (i + 1 < args.length)
+					topP = parseFloat(args[++i], 0.95f);
+				break;
 			case "--temperature":
 				if (i + 1 < args.length)
-					temperature = parseFloat(args[++i], 0.7f);
+					temperature = parseFloat(args[++i], 0.6f);
 				break;
 			case "--heap":
 				// ignored when run as jar, but consume argument
@@ -196,7 +210,9 @@ public final class ConsoleMain {
 		System.out.println("Options:");
 		System.out.println("  --dtype FLOAT32|FLOAT16|INT8   Activation wire format (default: FLOAT16)");
 		System.out.println("  --max-tokens N             Max generated tokens (default: 200)");
-		System.out.println("  --temperature F            Sampling temperature (default: 0.7)");
+		System.out.println("  --temperature F            Sampling temperature (default: 0.6)");
+		System.out.println("  --top-k N                  Top-K sampling cutoff (default: 20, 0 = disabled)");
+		System.out.println("  --top-p F                  Nucleus sampling top-p (default: 0.95, 0 = disabled)");
 		System.out.println("  --local                    Use in‑process nodes (no forking)");
 		System.out.println("  --nodes N                  Number of in‑process nodes (default: 3, only with --local)");
 		System.out.println("  --verbose, -v              Show more logging");
@@ -303,7 +319,13 @@ public final class ConsoleMain {
 	// -------------------------------------------------------------------------
 
 	private static void startRepl(GenerationLoop loop, Tokenizer tokenizer) throws IOException {
-		SamplingParams params = SamplingParams.defaults().withMaxTokens(maxTokens).withTemperature(temperature);
+		SamplingParams params = SamplingParams.defaults()
+				.withMaxTokens(maxTokens)
+				.withTemperature(temperature)
+				.withTopK(topK)
+				.withTopP(topP);
+
+		ChatHistory history = new ChatHistory();
 
 		print(DIM + "Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit." + RESET);
 		print("");
@@ -324,8 +346,13 @@ public final class ConsoleMain {
 			if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit"))
 				break;
 
-			InferenceRequest request = InferenceRequest.of("model", List.of(ChatMessage.user(line)), params,
-					RequestPriority.NORMAL);
+			history.addUser(line);
+			String modelType = ChatModelType.fromPath(modelPath);
+
+			// Use ofSession so the GenerationLoop can reuse KV blocks from prior turns.
+			// The session key (history.sessionId()) is stable for the entire conversation.
+			InferenceRequest request = InferenceRequest.ofSession(
+					history.sessionId(), modelType, history.getMessages(), params, RequestPriority.NORMAL);
 
 			System.out.print(BOLD + GREEN + "bot> " + RESET);
 			System.out.flush();
@@ -357,12 +384,17 @@ public final class ConsoleMain {
 
 			GenerationResult result = loop.generate(request, consumer);
 
+			history.addAssistant(result.text());
+
 			long elapsed = System.currentTimeMillis() - start;
 			System.out.println();
 			System.out.printf(DIM + "     [%d tokens · %d ms · %s]" + RESET + "%n", result.generatedTokens(), elapsed,
 					dtype);
 			System.out.println();
 		}
+
+		// Release KV memory for the session before exiting.
+		loop.evictSession(history.sessionId());
 
 		print(YELLOW + "\nbye." + RESET);
 		System.exit(0);
@@ -385,8 +417,8 @@ public final class ConsoleMain {
 		String mode = localMode ? "local in‑process" : "cluster (forked JVMs)";
 		System.out.printf("%s  hyper‑stack‑4j  ·  %s  ·  %s  ·  interactive console%s%n", CYAN, mode,
 				Path.of(modelPath).getFileName(), RESET);
-		System.out.printf("%s  dtype=%s  max_tokens=%d  temperature=%.1f  nodes=%d%s%n", DIM, dtype, maxTokens,
-				temperature, localMode ? nodeCount : 3, RESET);
+		System.out.printf("%s  dtype=%s  max_tokens=%d  temperature=%.2f  top_k=%d  top_p=%.2f  nodes=%d%s%n", DIM,
+				dtype, maxTokens, temperature, topK, topP, localMode ? nodeCount : 3, RESET);
 		System.out.println();
 	}
 
@@ -427,4 +459,5 @@ public final class ConsoleMain {
 		long params = 4L * hiddenDim * hiddenDim;
 		return (long) (params * 2.0); // assume FP16 for estimation (bytes per param = 2)
 	}
+
 }

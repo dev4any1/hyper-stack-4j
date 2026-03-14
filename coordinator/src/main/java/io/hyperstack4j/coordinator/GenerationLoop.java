@@ -225,13 +225,28 @@ public final class GenerationLoop {
 	/**
 	 * Run generation for a single request.
 	 *
+	 * <h3>Session-aware KV cache</h3>
+	 * When {@code request.sessionId()} is present the loop uses the sessionId as
+	 * the KV key for both the underlying pipeline and the prefix trie. This means:
+	 * <ul>
+	 *   <li>On turn 1 the full prompt is prefilled and the resulting KV blocks are
+	 *       stored under the sessionId.</li>
+	 *   <li>On turn N {@link KVCacheManager#findLongestPrefix} returns the token
+	 *       count already processed in earlier turns. Prefill starts from that
+	 *       offset, so no token is ever processed twice.</li>
+	 *   <li>KV blocks are NOT evicted at the end of each turn — they survive until
+	 *       the caller explicitly calls {@link #evictSession(String)}.</li>
+	 * </ul>
+	 *
+	 * Stateless requests (no sessionId) behave exactly as before: always prefill
+	 * from position 0 and evict immediately on completion.
+	 *
 	 * @param request  the inference request
 	 * @param consumer receives each token piece as it is generated
 	 * @return final GenerationResult with full text + stats
 	 */
 	public GenerationResult generate(InferenceRequest request, TokenConsumer consumer) {
 		Instant start = Instant.now();
-		String requestId = request.requestId();
 
 		// ── Step 1: Encode prompt ─────────────────────────────────────────────
 		ChatTemplateFormatter formatter = ChatTemplateFormatter
@@ -242,12 +257,25 @@ public final class GenerationLoop {
 		String prompt = formatter.format(request.messages());
 		int[] promptIds = tokenizer.encode(prompt);
 
-		// ── Step 2: Check prefix cache ────────────────────────────────────────
-		var prefixMatch = kvCache.findLongestPrefix(promptIds);
-		int startPos = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
+		// ── Step 2: Determine prefill start position ──────────────────────────
+		// For session requests: consult the prefix cache. The session key is stable
+		// across turns, so a hit means those tokens were already processed and their
+		// KV blocks still live in the pipeline under the session key. Start the
+		// prefill from the matched offset to skip all previously-seen tokens.
+		//
+		// For stateless requests: always start at 0. There is no stable key so no
+		// cache entry was ever written, and the pipeline has no KV blocks to reuse.
+		final String kvKey = request.kvCacheKey();
+		final boolean hasSession = request.sessionId() != null;
 
-		if (prefixMatch.isHit()) {
-			log.fine("Prefix cache hit: skipping " + startPos + " tokens for " + requestId);
+		int startPos = 0;
+		if (hasSession) {
+			var prefixMatch = kvCache.findLongestPrefix(promptIds);
+			if (prefixMatch.isHit()) {
+				startPos = prefixMatch.matchedTokens();
+				log.info("Prefix cache hit: " + startPos + "/" + promptIds.length
+						+ " tokens cached (session=" + kvKey + ")");
+			}
 		}
 
 		// Build working token array (prompt IDs only at first)
@@ -256,18 +284,18 @@ public final class GenerationLoop {
 		StringBuilder fullText = new StringBuilder();
 		GenerationResult.StopReason stopReason = GenerationResult.StopReason.MAX_TOKENS;
 
-		// ── Step 2b: Prefill — populate KV cache for all uncached prompt tokens ──
-		// Walk positions startPos .. promptLen-2, storing KV at each position.
-		// The last prompt token (position promptLen-1) is left for step 0 of the
-		// decode loop so its logits can drive the first token sample.
+		// ── Step 2b: Prefill — populate KV cache for uncached prompt tokens ──
+		// Walk positions startPos..promptLen-2, storing KV at each position under
+		// kvKey. The last prompt token (position promptLen-1) is left for step 0 of
+		// the decode loop so its logits drive the first sampled token.
 		int prefillSteps = promptIds.length - 1 - startPos;
 		if (prefillSteps > 0) {
-			log.info("Prefill: " + prefillSteps + " steps for prompt of " + promptIds.length + " tokens (request="
-					+ requestId + ")");
+			log.info("Prefill: " + prefillSteps + " steps for prompt of " + promptIds.length
+					+ " tokens (kvKey=" + kvKey + ")");
 			consumer.onPrefillStart(promptIds.length);
 			for (int p = startPos; p < promptIds.length - 1; p++) {
 				int[] prefillSlice = Arrays.copyOfRange(promptIds, 0, p + 1);
-				pipeline.forward(requestId, prefillSlice, p); // KV stored; logits discarded
+				pipeline.forward(kvKey, prefillSlice, p); // KV stored under kvKey; logits discarded
 			}
 			consumer.onPrefillComplete();
 			log.info("Prefill complete. Decode starts at position " + (promptIds.length - 1));
@@ -285,8 +313,9 @@ public final class GenerationLoop {
 
 		for (int step = 0; step < maxTokens; step++) {
 
-			// Step 3: Forward pass
-			float[] logits = pipeline.forward(requestId, allTokens, startPos + step);
+			// Step 3: Forward pass — always under kvKey so the pipeline reuses its
+			// internal KV matrices for this session.
+			float[] logits = pipeline.forward(kvKey, allTokens, startPos + step);
 
 			// Step 4: Sample next token
 			int[] historyArr = generatedIds.stream().mapToInt(Integer::intValue).toArray();
@@ -295,7 +324,7 @@ public final class GenerationLoop {
 			// Step 5: Check stop conditions by token ID
 			if (nextToken == tokenizer.eosTokenId()) {
 				stopReason = GenerationResult.StopReason.EOS_TOKEN;
-				break; // break BEFORE decode — EOS piece must never reach consumer or fullText
+				break;
 			}
 			if (sampler.isStopToken(nextToken, request.samplingParams())) {
 				stopReason = GenerationResult.StopReason.STOP_TOKEN;
@@ -305,11 +334,7 @@ public final class GenerationLoop {
 			// Step 6: Decode token piece
 			String piece = tokenizer.decodeToken(nextToken);
 
-			// Step 5b: Defensive EOS-string filter.
-			// GgufTokenizer quirk: a non-EOS token ID may decode to an EOS marker
-			// string (e.g. "</s>", "<|endoftext|>") when the model vocabulary stores
-			// these as regular text tokens in addition to the special EOS ID.
-			// Suppress such pieces so they never reach the consumer or fullText.
+			// Step 5b: Defensive EOS-string filter (GgufTokenizer quirk — see isEosMarker).
 			if (isEosMarker(piece)) {
 				stopReason = GenerationResult.StopReason.EOS_TOKEN;
 				break;
@@ -324,25 +349,57 @@ public final class GenerationLoop {
 			allTokens = appendToken(allTokens, nextToken);
 		}
 
-		// Cache the prompt prefix for future requests
-		if (!prefixMatch.isHit() && promptIds.length > 0) {
-			kvCache.cachePrefix(promptIds, promptIds.length, requestId + ":prefix");
+		// ── Post-generation: cache or evict ───────────────────────────────────
+		if (hasSession) {
+			// Cache the current formatted prompt token sequence (NOT the generated
+			// tokens). The next turn's formatted prompt begins with ALL of the current
+			// turn's prompt tokens (the conversation grows monotonically), so
+			// findLongestPrefix on turn N+1 will match exactly promptIds.length tokens
+			// and skip re-processing them.
+			//
+			// Caching allTokens would be wrong: generated token IDs do not appear in
+			// the next turn's formatted prompt (the assistant text is re-encoded from
+			// its string representation at turn N+1, which may produce different IDs due
+			// to StubTokenizer round-trip behaviour and special-token boundaries). The
+			// trie leaf would be unreachable because the paths diverge before reaching
+			// it, and findLongestPrefix would return no hit.
+			kvCache.cachePrefix(promptIds, promptIds.length, kvKey);
+			// Do NOT evict — the pipeline's KV blocks under sessionId must survive
+			// until the session ends. Caller is responsible for calling evictSession().
+		} else {
+			// Stateless request — clean up the pipeline KV immediately.
+			// No cachePrefix call: there is no stable key for a future request to match.
+			kvCache.evict(kvKey);
 		}
 
-		// Cleanup KV blocks for this request
-		kvCache.evict(requestId);
-
 		return new GenerationResult(
-                requestId,
-                fullText.toString(),
-                generatedIds,
-                promptIds.length,
-                generatedIds.size(),
-                stopReason,
-                Instant.now(),
-                Duration.between(start, Instant.now())
-        );
-    }
+				kvKey,
+				fullText.toString(),
+				generatedIds,
+				promptIds.length,
+				generatedIds.size(),
+				stopReason,
+				Instant.now(),
+				Duration.between(start, Instant.now()));
+	}
+
+	/**
+	 * Release all KV resources held for a conversation session.
+	 *
+	 * Evicts KV blocks from both GPU and CPU cache tiers and removes the
+	 * prefix-trie entry so a later session that begins with the same tokens does
+	 * not get a stale hit pointing at freed KV blocks.
+	 *
+	 * Call this when the user ends a multi-turn session — e.g. when the REPL
+	 * receives "exit", or when a REST session times out.
+	 *
+	 * @param sessionId the sessionId that was passed to
+	 *                  {@link InferenceRequest#ofSession}
+	 */
+	public void evictSession(String sessionId) {
+		kvCache.evict(sessionId);
+		kvCache.invalidatePrefix(sessionId);
+	}
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

@@ -29,8 +29,21 @@ import io.hyperstack4j.tokenizer.ChatMessage;
  * Created by the REST/gRPC layer and submitted to the RequestScheduler. Carries
  * everything the GenerationLoop needs: messages, sampling config, model ID, and
  * client-facing metadata.
+ *
+ * <h3>Single-turn vs multi-turn (session) requests</h3>
+ * Use {@link #of} for stateless, single-turn requests. Each call gets a fresh
+ * requestId and the KV cache is discarded after generation.
+ *
+ * Use {@link #ofSession} for multi-turn conversation requests. The caller
+ * supplies a stable {@code sessionId} that is shared across all turns of the
+ * same conversation. {@link #kvCacheKey()} returns the sessionId so that the
+ * GenerationLoop and the underlying pipeline can reuse KV blocks built in
+ * earlier turns instead of re-running the full prefill each time.
+ *
+ * Call {@link io.hyperstack4j.coordinator.GenerationLoop#evictSession} when
+ * the conversation ends to release KV memory.
  */
-public record InferenceRequest(String requestId, String modelId, List<ChatMessage> messages,
+public record InferenceRequest(String requestId, String sessionId, String modelId, List<ChatMessage> messages,
 		SamplingParams samplingParams, RequestPriority priority, Instant receivedAt)
 		implements Comparable<InferenceRequest> {
 
@@ -45,14 +58,46 @@ public record InferenceRequest(String requestId, String modelId, List<ChatMessag
 			throw new IllegalArgumentException("samplingParams must not be null");
 		if (priority == null)
 			throw new IllegalArgumentException("priority must not be null");
+		// sessionId may be null — null means stateless/single-turn.
 
 		messages = List.copyOf(messages); // defensive copy
 	}
 
-	/** Factory — generates a random requestId. */
+	/**
+	 * Factory for stateless single-turn requests.
+	 * Generates a random requestId; sessionId is null.
+	 */
 	public static InferenceRequest of(String modelId, List<ChatMessage> messages, SamplingParams params,
 			RequestPriority priority) {
-		return new InferenceRequest(UUID.randomUUID().toString(), modelId, messages, params, priority, Instant.now());
+		return new InferenceRequest(UUID.randomUUID().toString(), null, modelId, messages, params, priority,
+				Instant.now());
+	}
+
+	/**
+	 * Factory for multi-turn session requests.
+	 *
+	 * @param sessionId stable identifier shared across all turns of the same
+	 *                  conversation — must not be blank
+	 */
+	public static InferenceRequest ofSession(String sessionId, String modelId, List<ChatMessage> messages,
+			SamplingParams params, RequestPriority priority) {
+		if (sessionId == null || sessionId.isBlank())
+			throw new IllegalArgumentException("sessionId must not be blank");
+		return new InferenceRequest(UUID.randomUUID().toString(), sessionId, modelId, messages, params, priority,
+				Instant.now());
+	}
+
+	/**
+	 * The key to use for all KV cache operations (prefix trie + pipeline storage).
+	 *
+	 * Session requests: returns the stable sessionId so that KV blocks survive
+	 * across turns and the prefix cache can skip already-processed tokens.
+	 *
+	 * Stateless requests: returns the per-request UUID so each request is
+	 * completely isolated and cleaned up after generation.
+	 */
+	public String kvCacheKey() {
+		return sessionId != null ? sessionId : requestId;
 	}
 
 	/** Higher priority = lower compareTo value = scheduled first. */

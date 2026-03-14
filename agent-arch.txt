@@ -2,7 +2,7 @@
   hyper-stack-4j — Distributed Java LLM Inference Engine
   Full Architecture Design Document
   JDK 25 · Maven · Java-native · Commodity GPU Cluster
-  Last updated: 2026-03-12 (session 8)
+  Last updated: 2026-03-14 (session 9)
 ================================================================================
 
 
@@ -47,7 +47,7 @@ Far cheaper than one 64GB GPU.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Multi-module Maven project, JDK 25 throughout. All modules BUILD SUCCESS as of
-2026-03-12 (session 7). 72+ production Java source files, test files, 346 @Test methods.
+2026-03-14 (session 9). 72+ production Java source files, test files, 355 @Test methods.
 
   hyper-stack-4j/               <- parent POM
   |
@@ -93,8 +93,12 @@ Multi-module Maven project, JDK 25 throughout. All modules BUILD SUCCESS as of
   |   |                            when MODEL_PATH set, CyclicForwardPassHandler otherwise
   |   +-- NodeMain              <- JVM entry point, prints READY:<nodeId>:<port>
   |   +-- ProcessPipelineClient <- InferencePipeline over real gRPC channels
-  |   +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model)
+  |   +-- ChatHistory           <- conversation history for multi-turn REPL
+  |   +-- ChatModelType         <- derives chat template from GGUF path (tinyllama, llama3, etc.)
+  |   +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model; remembers history)
   |   +-- LoadShardsParallelTest<- unit tests for parallel shard loading (2 tests)
+  |   +-- ChatHistoryTest       <- unit tests for ChatHistory (3 tests)
+  |   +-- ChatModelTypeTest     <- unit tests for ChatModelType (6 tests)
   |   Package: io.hyperstack4j.player
   |   Shade jar: player.jar  (main: ConsoleMain)
   |
@@ -408,14 +412,19 @@ Example metrics endpoint:
   REST layer translates this to HTTP 503 + Retry-After header.
 
   Autoregressive loop (GenerationLoop.generate):
-    1. Tokenizer.encode(chatTemplate.format(messages))  -> int[] tokens
-    2. PrefixCache.findLongestPrefix(tokens)            -> match
-    3. pipeline.forward(tokens) or forwardFromPosition()
-    4. Sampler.sample(logits, params, history)          -> int nextToken
-    5. If nextToken == EOS: break
-    6. Tokenizer.decodeToken(nextToken)                 -> String piece
-    7. TokenConsumer.accept(piece, tokenId, step)  <- SSE / gRPC stream
-    8. Repeat
+    1. Tokenizer.encode(chatTemplate.format(messages))  -> int[] promptIds
+    2. kvKey = request.kvCacheKey()  (sessionId if session, requestId if stateless)
+    3. if session: PrefixCache.findLongestPrefix(promptIds) -> startPos (skip cached tokens)
+       if stateless: startPos = 0
+    4. Prefill: pipeline.forward(kvKey, slice, p) for p in startPos..promptLen-2
+    5. Decode loop:
+         pipeline.forward(kvKey, allTokens, startPos+step) -> logits
+         Sampler.sample(logits, params, history)           -> nextToken
+         if nextToken == EOS or isEosMarker(piece): break
+         TokenConsumer.accept(piece, tokenId, step)        <- SSE / gRPC stream
+    6. Post-generation:
+         session:   cachePrefix(promptIds, promptIds.length, kvKey); do NOT evict
+         stateless: kvCache.evict(kvKey)
 
 8.3  KV CACHE MANAGER
   See section 6 above.
@@ -871,7 +880,7 @@ sampling:
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-13. BUILD STATUS (as of 2026-03-12, session 8)
+13. BUILD STATUS (as of 2026-03-14, session 9)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   hyper-stack-4j   SUCCESS  (parent pom)
@@ -884,8 +893,8 @@ sampling:
                              SimpleTokenizer, GgufTokenizer, ChatMessage,
                              ChatTemplate, ChatTemplateFormatter)
   sampler          SUCCESS  (9 classes: full pipeline — 8 steps, 3 preset profiles)
-  kvcache          SUCCESS  (8 classes: KVCacheManager, GpuKVCache, CpuKVCache,
-                             PrefixCache, KVBlock, KVKey, KVCache, LayerRange)
+  kvcache          SUCCESS  (8 classes: KVCacheManager [+invalidatePrefix], GpuKVCache,
+                             CpuKVCache, PrefixCache, KVBlock, KVKey, KVCache, LayerRange)
   health           SUCCESS  (6 classes: CircuitBreaker, CircuitState,
                              HealthEvaluator, HealthEvent, HealthThresholds,
                              NodeHealth)
@@ -895,15 +904,16 @@ sampling:
                              CyclicForwardPassHandler, ActivationCodec,
                              ActivationDtype, ForwardRequest, ForwardResult,
                              ShardContext, NodeConfig)
-  coordinator      SUCCESS  (14 classes: GenerationLoop [EOS filter],
+  coordinator      SUCCESS  (14 classes: GenerationLoop [session KV reuse + EOS filter],
                              RequestScheduler, InferenceApiServer,
                              SseTokenConsumer, BatchConfig, BatchEntry,
                              FaultTolerantPipeline, RetryPolicy,
                              PipelineUnavailableException, HealthReactor,
-                             InferenceRequest, GenerationResult,
-                             TokenConsumer, RequestPriority)
-  player           SUCCESS  (5 main classes: ClusterHarness, EmbeddedNodeServer,
-                             NodeMain, ProcessPipelineClient, ConsoleMain;
+                             InferenceRequest [+sessionId, +ofSession, +kvCacheKey],
+                             GenerationResult, TokenConsumer, RequestPriority)
+  player           SUCCESS  (6 main classes: ClusterHarness, EmbeddedNodeServer,
+                             NodeMain, ProcessPipelineClient,
+                             ChatHistory [+sessionId], ConsoleMain [+ofSession, +evictSession];
                              1 test class: LoadShardsParallelTest)
                              Shade jar: player/target/player.jar  (main: ConsoleMain)
   integration      SUCCESS  (ModelLiveRunner [standalone main, 6 checks, not JUnit];
@@ -911,17 +921,96 @@ sampling:
                              depends on player module)
                              Shade jar: integration/target/player.jar  (main: ModelLiveRunner)
 
-  Unit tests:    340  (across api/registry/coordinator/node/kvcache/tokenizer/
+  Unit tests:    349  (across api/registry/coordinator/node/kvcache/tokenizer/
                        sampler/health/player — all @Test methods in *Test.java files)
+                 +9   GenerationLoopSessionTest (session 9)
   Integration:   15   (InProcessClusterIT:6 + ThreeNodeClusterIT:9)
-  Total @Test:   346
+  Total @Test:   355
   Failures:      0
   Errors:        0
 
-  Note: TinyLlamaLiveIT (7 JUnit IT tests) replaced by ModelLiveRunner
-  (standalone executable in integration/src/main/java — not @Test methods).
-  LoadShardsParallelTest (2 tests) moved from integration to player module.
 
+19.0  Session 7 — Player history fix (multi-turn REPL)
+-----------------------------------------------
+Problem: Second and later turns produced wrong or garbled output; conversation
+history appeared not to work.
+
+Root causes:
+  (1) GenerationLoop used prefix cache but evicted KV after each turn. Turn 2
+      got a prefix hit pointing at freed KV → missing context → garbage output.
+  (2) ConsoleMain passed modelId "model" → chatml template selected for TinyLlama,
+      which requires the tinyllama template.
+
+Fixes:
+  - GenerationLoop.generate(): disabled prefix cache for single-request path.
+    Always startPos=0; full conversation re-prefilled every turn. (Correct but
+    O(N) — superseded by session 9.)
+  - ChatModelType.fromPath(path): derives template key from GGUF file name.
+    ConsoleMain uses it so TinyLlama-1.1B-Chat-v1.0.*.gguf gets tinyllama template.
+  - ChatModelTypeTest: 6 unit tests.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+20. SESSION 9 CHANGES (2026-03-14)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+20.1  Multi-turn session KV cache reuse
+-----------------------------------------------
+Problem:
+  GenerationLoop.generate() always set startPos=0 and called kvCache.evict(requestId)
+  after every turn. Each REPL turn gets a fresh UUID requestId, so the pipeline's
+  internal KV (Map<String, float[][]> keyed by requestId) is always cold. Turn N
+  re-prefills the full conversation history → O(N) latency growth:
+  23 s → 30 s → 42 s → 64 s → 75 s observed on TinyLlama.
+
+  The session 7 fix was correct about the symptom (evicted KV + prefix hit = corrupt
+  output) but chose the wrong cure ("always prefill everything" instead of "use a
+  stable key that survives across turns").
+
+Fix — 6 files:
+
+  InferenceRequest (coordinator)
+    Added nullable sessionId field. ofSession(sessionId,...) factory for multi-turn
+    requests. kvCacheKey() returns sessionId when present, requestId otherwise.
+    Existing of() factory and all existing call sites unchanged.
+
+  GenerationLoop.generate() (coordinator)
+    kvKey = request.kvCacheKey()                — stable across turns
+    if (hasSession) startPos = findLongestPrefix(promptIds).matchedTokens()
+    prefill + decode pass kvKey to pipeline.forward() not requestId
+    after generation:
+      session:   cachePrefix(promptIds, promptIds.length, kvKey)
+                 do NOT evict — KV must survive for turn N+1
+      stateless: evict(kvKey) as before, no cachePrefix
+    NOTE: cachePrefix stores promptIds, not allTokens. allTokens contains
+    generated token IDs appended after the prompt. These IDs do not appear in
+    the next turn's formatted prompt, so the trie leaf would be unreachable and
+    findLongestPrefix would return a miss every time.
+
+  GenerationLoop.evictSession(sessionId) (coordinator)
+    New public method. Calls kvCache.evict(sessionId) and
+    kvCache.invalidatePrefix(sessionId). Call when conversation ends.
+
+  KVCacheManager (kvcache)
+    Added invalidatePrefix(cacheKey) delegating to prefixCache.invalidate().
+
+  ChatHistory (player)
+    Added UUID sessionId field + sessionId() accessor.
+
+  ConsoleMain.startRepl() (player)
+    InferenceRequest.of(...) → InferenceRequest.ofSession(history.sessionId(), ...)
+    loop.evictSession(history.sessionId()) called before exit.
+
+Result:
+  Turn latency is now flat — proportional to new tokens per turn only.
+  Before: 23 s / 30 s / 42 s / 64 s / 75 s (growing with history)
+  After:  ~7–8 s per turn regardless of conversation length.
+
+New tests: GenerationLoopSessionTest (9 tests in coordinator module)
+  All use SpyInferencePipeline recording startPos per forward() call.
+  Assertions verify startPos > 0 on turn 2 (cache hit) rather than querying
+  the PrefixCache trie with raw text (trie contains formatted prompt tokens
+  including template scaffolding, not raw user text — raw queries always miss).
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
