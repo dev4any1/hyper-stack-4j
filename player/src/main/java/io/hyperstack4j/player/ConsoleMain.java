@@ -348,8 +348,11 @@ public final class ConsoleMain {
 
 			history.addUser(line);
 			String modelType = ChatModelType.fromPath(modelPath);
-			InferenceRequest request = InferenceRequest.of(modelType, history.getMessages(), params,
-					RequestPriority.NORMAL);
+
+			// Use ofSession so the GenerationLoop can reuse KV blocks from prior turns.
+			// The session key (history.sessionId()) is stable for the entire conversation.
+			InferenceRequest request = InferenceRequest.ofSession(
+					history.sessionId(), modelType, history.getMessages(), params, RequestPriority.NORMAL);
 
 			System.out.print(BOLD + GREEN + "bot> " + RESET);
 			System.out.flush();
@@ -389,6 +392,9 @@ public final class ConsoleMain {
 					dtype);
 			System.out.println();
 		}
+
+		// Release KV memory for the session before exiting.
+		loop.evictSession(history.sessionId());
 
 		print(YELLOW + "\nbye." + RESET);
 		System.exit(0);

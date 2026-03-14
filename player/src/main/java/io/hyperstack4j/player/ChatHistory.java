@@ -17,16 +17,28 @@ package io.hyperstack4j.player;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import io.hyperstack4j.tokenizer.ChatMessage;
 
 /**
  * Mutable conversation history for the REPL. Accumulates user and assistant
  * turns so that each request can be sent with full context (multi-turn chat).
+ *
+ * Each ChatHistory instance owns a stable {@link #sessionId()} that should be
+ * passed to {@link io.hyperstack4j.coordinator.InferenceRequest#ofSession} for
+ * every turn. This lets the GenerationLoop reuse KV cache blocks across turns
+ * instead of re-running the full prefill on each request.
  */
 public final class ChatHistory {
 
+	private final String sessionId = UUID.randomUUID().toString();
 	private final List<ChatMessage> messages = new ArrayList<>();
+
+	/** Stable session identifier — share this across all turns of the conversation. */
+	public String sessionId() {
+		return sessionId;
+	}
 
 	/** Appends a user message. */
 	public void addUser(String content) {
