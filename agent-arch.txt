@@ -93,8 +93,12 @@ Multi-module Maven project, JDK 25 throughout. All modules BUILD SUCCESS as of
   |   |                            when MODEL_PATH set, CyclicForwardPassHandler otherwise
   |   +-- NodeMain              <- JVM entry point, prints READY:<nodeId>:<port>
   |   +-- ProcessPipelineClient <- InferencePipeline over real gRPC channels
-  |   +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model)
+  |   +-- ChatHistory           <- conversation history for multi-turn REPL
+  |   +-- ChatModelType         <- derives chat template from GGUF path (tinyllama, llama3, etc.)
+  |   +-- ConsoleMain           <- interactive REPL (MODEL_PATH selects real model; remembers history)
   |   +-- LoadShardsParallelTest<- unit tests for parallel shard loading (2 tests)
+  |   +-- ChatHistoryTest       <- unit tests for ChatHistory (3 tests)
+  |   +-- ChatModelTypeTest     <- unit tests for ChatModelType (6 tests)
   |   Package: io.hyperstack4j.player
   |   Shade jar: player.jar  (main: ConsoleMain)
   |
@@ -902,8 +906,8 @@ sampling:
                              PipelineUnavailableException, HealthReactor,
                              InferenceRequest, GenerationResult,
                              TokenConsumer, RequestPriority)
-  player           SUCCESS  (5 main classes: ClusterHarness, EmbeddedNodeServer,
-                             NodeMain, ProcessPipelineClient, ConsoleMain;
+  player           SUCCESS  (6 main classes: ClusterHarness, EmbeddedNodeServer,
+                             NodeMain, ProcessPipelineClient, ChatHistory, ConsoleMain;
                              1 test class: LoadShardsParallelTest)
                              Shade jar: player/target/player.jar  (main: ConsoleMain)
   integration      SUCCESS  (ModelLiveRunner [standalone main, 6 checks, not JUnit];
@@ -921,7 +925,33 @@ sampling:
   Note: TinyLlamaLiveIT (7 JUnit IT tests) replaced by ModelLiveRunner
   (standalone executable in integration/src/main/java — not @Test methods).
   LoadShardsParallelTest (2 tests) moved from integration to player module.
+  ChatHistoryTest (3 tests) — conversation history for REPL multi-turn chat.
+  ChatModelTypeTest (6 tests) — model type from path for correct chat template.
 
+
+19.0  Player history fix (multi-turn REPL)
+-----------------------------------------------
+Problem: Second and later turns produced wrong or garbled output (e.g. "Do you
+remember my name?" answered with "How are you?94 tokens?)"); conversation
+history appeared not to work.
+
+Root causes:
+  (1) GenerationLoop single-request path used prefix cache: after turn 1 we
+      cached the prompt prefix and evicted request KV. Turn 2 got a prefix hit
+      and skipped prefill, but the KV for that prefix was gone, so the model
+      ran with missing context.
+  (2) ConsoleMain passed modelId "model", so ChatTemplateFormatter used chatml.
+      TinyLlama (and similar) require the tinyllama template; wrong template
+      yields bad output.
+
+Fixes:
+  - GenerationLoop.generate(): Do not use prefix cache in single-request path.
+    Always startPos = 0 and do not cache prefix after generation. Multi-turn
+    now always prefills the full conversation.
+  - ChatModelType.fromPath(path): New helper derives template key from GGUF
+    path (tinyllama, llama3, mistral, gemma, chatml). ConsoleMain uses it so
+    e.g. TinyLlama-1.1B-Chat-v1.0.*.gguf gets tinyllama template.
+  - ChatModelTypeTest: 6 unit tests for fromPath().
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

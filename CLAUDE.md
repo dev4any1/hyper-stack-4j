@@ -6,7 +6,7 @@ C. read the rest code
 
 D. Think hard on it
 
-E. If you are uncertain please ask me then continue
+E. It's better to add new java classes than extand extisting files
 
 F. follow this implementation rools:
 

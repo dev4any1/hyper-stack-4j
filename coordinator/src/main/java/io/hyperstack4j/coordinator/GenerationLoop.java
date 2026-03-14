@@ -242,13 +242,12 @@ public final class GenerationLoop {
 		String prompt = formatter.format(request.messages());
 		int[] promptIds = tokenizer.encode(prompt);
 
-		// ── Step 2: Check prefix cache ────────────────────────────────────────
-		var prefixMatch = kvCache.findLongestPrefix(promptIds);
-		int startPos = prefixMatch.isHit() ? prefixMatch.matchedTokens() : 0;
-
-		if (prefixMatch.isHit()) {
-			log.fine("Prefix cache hit: skipping " + startPos + " tokens for " + requestId);
-		}
+		// ── Step 2: Prefill start position ───────────────────────────────────
+		// Do not use prefix cache in single-request path: we evict(requestId) after
+		// each request, so a prefix "hit" from a previous turn would refer to evicted
+		// KV and cause wrong/garbage output. Always prefill the full prompt so
+		// multi-turn conversation history is correct.
+		int startPos = 0;
 
 		// Build working token array (prompt IDs only at first)
 		int[] allTokens = promptIds.clone();
@@ -324,10 +323,7 @@ public final class GenerationLoop {
 			allTokens = appendToken(allTokens, nextToken);
 		}
 
-		// Cache the prompt prefix for future requests
-		if (!prefixMatch.isHit() && promptIds.length > 0) {
-			kvCache.cachePrefix(promptIds, promptIds.length, requestId + ":prefix");
-		}
+		// Do not cache prefix for single-request path (see startPos comment above).
 
 		// Cleanup KV blocks for this request
 		kvCache.evict(requestId);

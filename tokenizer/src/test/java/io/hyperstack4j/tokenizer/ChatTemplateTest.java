@@ -106,4 +106,11 @@ class ChatTemplateTest {
 		assertThat(ChatTemplate.forModelType("TinyLlama").modelType()).isEqualTo("tinyllama");
 		assertThat(ChatTemplate.forModelType("ZEPHYR").modelType()).isEqualTo("tinyllama");
 	}
+
+	@Test
+	void qwen_uses_chatml_template() {
+		ChatTemplate t = ChatTemplate.forModelType("qwen");
+
+		assertThat(t.modelType()).isEqualTo("chatml");
+	}
 }

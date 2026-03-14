@@ -251,6 +251,7 @@ Any GGUF file with a LLaMA-compatible architecture works:
 | Model | Size | RAM needed |
 |-------|------|------------|
 | `TinyLlama-1.1B-Chat.Q4_K_M.gguf` | 637 MB | ~2 GB |
+| `Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf` | ~6–7 GB | ~10–12 GB |
 | `Mistral-7B-Instruct-v0.2.Q4_K_M.gguf` | 4.1 GB | ~6 GB |
 | `Llama-3.2-8B-Instruct.Q4_K_M.gguf` | 4.9 GB | ~8 GB |
 | `Llama-3.1-70B-Instruct.Q4_K_M.gguf` | 40 GB | 16 × 4GB nodes |
@@ -267,7 +268,7 @@ Any GGUF file with a LLaMA-compatible architecture works:
 | `tokenizer` | `GgufTokenizer` (SentencePiece BPE from GGUF), `DJLTokenizer`, `StubTokenizer`, chat templates |
 | `sampler` | Pure Java sampler — temperature, top-k, top-p, repetition penalty |
 | `health` | Health Monitor (Hazelcast events, JCuda GPU probes, Resilience4j circuit breakers) |
-| `player` | Model interaction layer: `ClusterHarness`, `EmbeddedNodeServer`, `NodeMain`, `ProcessPipelineClient`, `ConsoleMain` REPL. Package `io.hyperstack4j.player`. Shade jar: `player.jar` (main: `ConsoleMain`) |
+| `player` | Model interaction layer: `ClusterHarness`, `EmbeddedNodeServer`, `NodeMain`, `ProcessPipelineClient`, `ChatHistory`, `ChatModelType`, `ConsoleMain` REPL. REPL keeps conversation history for multi-turn chat; chat template is derived from the GGUF path (e.g. TinyLlama path uses tinyllama template). Package `io.hyperstack4j.player`. Shade jar: `player.jar` (main: `ConsoleMain`) |
 | `integration` | JUnit integration tests (`InProcessClusterIT`, `ThreeNodeClusterIT`) + `ModelLiveRunner` (standalone real-model executable). Depends on `player`. Shade jar: `player.jar` (main: `ModelLiveRunner`) |
 
 ## Activation Compression

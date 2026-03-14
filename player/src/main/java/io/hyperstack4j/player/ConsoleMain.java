@@ -325,6 +325,8 @@ public final class ConsoleMain {
 				.withTopK(topK)
 				.withTopP(topP);
 
+		ChatHistory history = new ChatHistory();
+
 		print(DIM + "Type your prompt and press Enter. Type 'exit' or Ctrl-C to quit." + RESET);
 		print("");
 
@@ -344,7 +346,9 @@ public final class ConsoleMain {
 			if (line.equalsIgnoreCase("exit") || line.equalsIgnoreCase("quit"))
 				break;
 
-			InferenceRequest request = InferenceRequest.of("model", List.of(ChatMessage.user(line)), params,
+			history.addUser(line);
+			String modelType = ChatModelType.fromPath(modelPath);
+			InferenceRequest request = InferenceRequest.of(modelType, history.getMessages(), params,
 					RequestPriority.NORMAL);
 
 			System.out.print(BOLD + GREEN + "bot> " + RESET);
@@ -376,6 +380,8 @@ public final class ConsoleMain {
 			};
 
 			GenerationResult result = loop.generate(request, consumer);
+
+			history.addAssistant(result.text());
 
 			long elapsed = System.currentTimeMillis() - start;
 			System.out.println();
@@ -447,4 +453,5 @@ public final class ConsoleMain {
 		long params = 4L * hiddenDim * hiddenDim;
 		return (long) (params * 2.0); // assume FP16 for estimation (bytes per param = 2)
 	}
+
 }
